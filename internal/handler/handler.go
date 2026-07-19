@@ -8,30 +8,40 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/true18/shortener/internal/repository"
 )
 
 type Handler struct {
 	repo    repository.URLRepository
 	baseURL string
+	router  chi.Router
 }
 
 func New(repo repository.URLRepository, baseURL string) *Handler {
-	return &Handler{
+	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
 	}
+
+	r := chi.NewRouter()
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		badRequest(w)
+	})
+	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+		badRequest(w)
+	})
+	r.Post("/", h.create)
+	r.Get("/{id}", h.redirect)
+
+	h.router = r
+
+	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		h.create(w, r)
-	case http.MethodGet:
-		h.redirect(w, r)
-	default:
-		badRequest(w)
-	}
+	h.router.ServeHTTP(w, r)
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
@@ -64,8 +74,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/")
-	if id == "" || strings.Contains(id, "/") {
+	id := chi.URLParam(r, "id")
+	if id == "" {
 		badRequest(w)
 		return
 	}
