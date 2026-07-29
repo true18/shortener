@@ -1,0 +1,218 @@
+package handler_test
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/true18/shortener/internal/handler"
+	"github.com/true18/shortener/internal/repository"
+)
+
+const testBaseURL = "http://localhost:8080"
+
+type fakeRepo struct {
+	idByURL map[string]string
+	urlByID map[string]string
+	nextID  string
+}
+
+func newFakeRepo() *fakeRepo {
+	return &fakeRepo{
+		idByURL: make(map[string]string),
+		urlByID: make(map[string]string),
+		nextID:  "abc12345",
+	}
+}
+
+func (f *fakeRepo) Save(originalURL string) (string, error) {
+	if id, ok := f.idByURL[originalURL]; ok {
+		return id, nil
+	}
+
+	f.idByURL[originalURL] = f.nextID
+	f.urlByID[f.nextID] = originalURL
+
+	return f.nextID, nil
+}
+
+func (f *fakeRepo) Find(id string) (string, error) {
+	originalURL, ok := f.urlByID[id]
+	if !ok {
+		return "", repository.ErrNotFound
+	}
+
+	return originalURL, nil
+}
+
+func TestCreate(t *testing.T) {
+	repo := newFakeRepo()
+	h := handler.New(repo, testBaseURL)
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want %q", got, "text/plain")
+	}
+	if got := rec.Body.String(); got != testBaseURL+"/abc12345" {
+		t.Fatalf("body = %q, want %q", got, testBaseURL+"/abc12345")
+	}
+	if _, ok := repo.idByURL["https://practicum.yandex.ru/"]; !ok {
+		t.Fatal("original URL was not saved")
+	}
+}
+
+func TestRedirect(t *testing.T) {
+	repo := newFakeRepo()
+	repo.urlByID["abc12345"] = "https://practicum.yandex.ru/"
+	h := handler.New(repo, testBaseURL)
+
+	req := httptest.NewRequest(http.MethodGet, "/abc12345", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusTemporaryRedirect)
+	}
+	if got := rec.Header().Get("Location"); got != "https://practicum.yandex.ru/" {
+		t.Fatalf("Location = %q, want %q", got, "https://practicum.yandex.ru/")
+	}
+}
+
+func TestBadRequests(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		target string
+		body   string
+	}{
+		{
+			name:   "unsupported method",
+			method: http.MethodPut,
+			target: "/",
+		},
+		{
+			name:   "empty post body",
+			method: http.MethodPost,
+			target: "/",
+		},
+		{
+			name:   "post to id path",
+			method: http.MethodPost,
+			target: "/abc12345",
+			body:   "https://practicum.yandex.ru/",
+		},
+		{
+			name:   "get without id",
+			method: http.MethodGet,
+			target: "/",
+		},
+		{
+			name:   "unknown id",
+			method: http.MethodGet,
+			target: "/unknown",
+		},
+		{
+			name:   "nested path",
+			method: http.MethodGet,
+			target: "/abc/def",
+		},
+		{
+			name:   "relative url",
+			method: http.MethodPost,
+			target: "/",
+			body:   "practicum.yandex.ru",
+		},
+		{
+			name:   "unsupported url scheme",
+			method: http.MethodPost,
+			target: "/",
+			body:   "ftp://example.com/",
+		},
+		{
+			name:   "url without host",
+			method: http.MethodPost,
+			target: "/",
+			body:   "https:///path",
+		},
+		{
+			name:   "url with whitespace",
+			method: http.MethodPost,
+			target: "/",
+			body:   "https://example .com/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := handler.New(newFakeRepo(), testBaseURL)
+			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+func TestStorageErrors(t *testing.T) {
+	errStorage := errors.New("storage failed")
+	h := handler.New(errorRepo{err: errStorage}, testBaseURL)
+
+	tests := []struct {
+		name   string
+		method string
+		target string
+		body   string
+	}{
+		{
+			name:   "save error",
+			method: http.MethodPost,
+			target: "/",
+			body:   "https://practicum.yandex.ru/",
+		},
+		{
+			name:   "find error",
+			method: http.MethodGet,
+			target: "/abc12345",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+			}
+		})
+	}
+}
+
+type errorRepo struct {
+	err error
+}
+
+func (r errorRepo) Save(string) (string, error) {
+	return "", r.err
+}
+
+func (r errorRepo) Find(string) (string, error) {
+	return "", r.err
+}
