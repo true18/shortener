@@ -4,7 +4,7 @@ import "errors"
 
 var ErrNotFound = errors.New("url not found")
 
-type URLRepository interface {
+type URLStorer interface {
 	Save(originalURL string) (string, error)
 	Find(id string) (string, error)
 }

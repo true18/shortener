@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -11,7 +12,8 @@ import (
 func main() {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(1)
 	}
 
 	if err := server.Run(cfg); err != nil {

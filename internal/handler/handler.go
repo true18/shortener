@@ -14,12 +14,12 @@ import (
 )
 
 type Handler struct {
-	repo    repository.URLRepository
+	repo    repository.URLStorer
 	baseURL string
 	router  chi.Router
 }
 
-func New(repo repository.URLRepository, baseURL string) *Handler {
+func New(repo repository.URLStorer, baseURL string) *Handler {
 	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -49,6 +49,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		badRequest(w)
 		return
 	}
+	defer r.Body.Close()
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {

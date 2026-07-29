@@ -2,7 +2,6 @@ package config
 
 import (
 	"flag"
-	"io"
 )
 
 const (
@@ -22,7 +21,6 @@ func Parse(args []string) (Config, error) {
 	}
 
 	flags := flag.NewFlagSet("shortener", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
 	flags.StringVar(&cfg.ServerAddress, "a", cfg.ServerAddress, "HTTP server address")
 	flags.StringVar(&cfg.BaseURL, "b", cfg.BaseURL, "base URL for shortened links")
 
