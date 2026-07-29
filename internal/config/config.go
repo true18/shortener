@@ -2,11 +2,14 @@ package config
 
 import (
 	"flag"
+	"os"
 )
 
 const (
 	DefaultServerAddress = "localhost:8080"
 	DefaultBaseURL       = "http://localhost:8080"
+	EnvServerAddress     = "SERVER_ADDRESS"
+	EnvBaseURL           = "BASE_URL"
 )
 
 type Config struct {
@@ -26,6 +29,13 @@ func Parse(args []string) (Config, error) {
 
 	if err := flags.Parse(args); err != nil {
 		return Config{}, err
+	}
+
+	if value, ok := os.LookupEnv(EnvServerAddress); ok {
+		cfg.ServerAddress = value
+	}
+	if value, ok := os.LookupEnv(EnvBaseURL); ok {
+		cfg.BaseURL = value
 	}
 
 	return cfg, nil
