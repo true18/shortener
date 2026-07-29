@@ -7,6 +7,7 @@ import (
 
 	"github.com/true18/shortener/internal/config"
 	"github.com/true18/shortener/internal/server"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -16,7 +17,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := server.Run(cfg); err != nil {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer logger.Sync()
+
+	if err := server.Run(cfg, logger); err != nil {
 		log.Fatal(err)
 	}
 }
