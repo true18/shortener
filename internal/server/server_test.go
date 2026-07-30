@@ -18,7 +18,7 @@ import (
 const testBaseURL = "http://localhost:8080"
 
 func TestShortenJSONWithoutGzip(t *testing.T) {
-	h := newTestServer()
+	h := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(`{"url":"https://practicum.yandex.ru"}`))
 	rec := httptest.NewRecorder()
 
@@ -56,7 +56,7 @@ func TestShortenJSONWithoutGzip(t *testing.T) {
 }
 
 func TestShortenJSONWithGzipResponse(t *testing.T) {
-	h := newTestServer()
+	h := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(`{"url":"https://practicum.yandex.ru"}`))
 	req.Header.Set("Accept-Encoding", "gzip")
 	rec := httptest.NewRecorder()
@@ -85,7 +85,7 @@ func TestShortenJSONWithGzipResponse(t *testing.T) {
 }
 
 func TestShortenJSONWithGzipRequest(t *testing.T) {
-	h := newTestServer()
+	h := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/shorten", gzipBody(t, `{"url":"https://practicum.yandex.ru"}`))
 	req.Header.Set("Content-Encoding", "gzip")
 	rec := httptest.NewRecorder()
@@ -108,7 +108,7 @@ func TestShortenJSONWithGzipRequest(t *testing.T) {
 }
 
 func TestBadGzipRequest(t *testing.T) {
-	h := newTestServer()
+	h := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader("not gzip"))
 	req.Header.Set("Content-Encoding", "gzip")
 	rec := httptest.NewRecorder()
@@ -121,7 +121,7 @@ func TestBadGzipRequest(t *testing.T) {
 }
 
 func TestPlainTextResponseIsNotGzipped(t *testing.T) {
-	h := newTestServer()
+	h := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
 	req.Header.Set("Accept-Encoding", "gzip")
 	rec := httptest.NewRecorder()
@@ -139,11 +139,19 @@ func TestPlainTextResponseIsNotGzipped(t *testing.T) {
 	}
 }
 
-func newTestServer() http.Handler {
-	return server.New(config.Config{
-		BaseURL:       testBaseURL,
-		ServerAddress: "localhost:8080",
+func newTestServer(t *testing.T) http.Handler {
+	t.Helper()
+
+	h, err := server.New(config.Config{
+		BaseURL:         testBaseURL,
+		ServerAddress:   "localhost:8080",
+		FileStoragePath: t.TempDir() + "/storage.json",
 	}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("server.New returned error: %v", err)
+	}
+
+	return h
 }
 
 func gzipBody(t *testing.T, body string) io.Reader {

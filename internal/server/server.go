@@ -10,12 +10,22 @@ import (
 	"go.uber.org/zap"
 )
 
-func New(cfg config.Config, logger *zap.Logger) http.Handler {
-	h := handler.New(repository.NewMemory(), cfg.BaseURL)
+func New(cfg config.Config, logger *zap.Logger) (http.Handler, error) {
+	store, err := repository.NewFile(cfg.FileStoragePath)
+	if err != nil {
+		return nil, err
+	}
 
-	return middleware.RequestLogger(logger)(middleware.Gzip(h))
+	h := handler.New(store, cfg.BaseURL)
+
+	return middleware.RequestLogger(logger)(middleware.Gzip(h)), nil
 }
 
 func Run(cfg config.Config, logger *zap.Logger) error {
-	return http.ListenAndServe(cfg.ServerAddress, New(cfg, logger))
+	h, err := New(cfg, logger)
+	if err != nil {
+		return err
+	}
+
+	return http.ListenAndServe(cfg.ServerAddress, h)
 }
