@@ -13,7 +13,7 @@ import (
 func New(cfg config.Config, logger *zap.Logger) http.Handler {
 	h := handler.New(repository.NewMemory(), cfg.BaseURL)
 
-	return middleware.RequestLogger(logger)(h)
+	return middleware.RequestLogger(logger)(middleware.Gzip(h))
 }
 
 func Run(cfg config.Config, logger *zap.Logger) error {
