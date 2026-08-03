@@ -15,12 +15,12 @@ import (
 )
 
 type Handler struct {
-	repo    repository.URLStorer
+	repo    repository.Store
 	baseURL string
 	router  chi.Router
 }
 
-func New(repo repository.URLStorer, baseURL string) *Handler {
+func New(repo repository.Store, baseURL string) *Handler {
 	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -152,7 +152,7 @@ func validURL(rawURL string) bool {
 		return false
 	}
 
-	return u.IsAbs() && u.Hostname() != "" && (u.Scheme == "http" || u.Scheme == "https")
+	return u.Hostname() != "" && (u.Scheme == "http" || u.Scheme == "https")
 }
 
 func badRequest(w http.ResponseWriter) {

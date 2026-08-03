@@ -54,22 +54,26 @@ func (m *Memory) Save(originalURL string) (string, error) {
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if id, ok := m.ids[originalURL]; ok {
+		m.mu.Unlock()
 		return id, nil
 	}
 
+	var record fileRecord
+	var snapshot []fileRecord
+
 	for {
-		id, err := newID()
+		newID, err := newID()
 		if err != nil {
+			m.mu.Unlock()
 			return "", err
 		}
-		if _, exists := m.urls[id]; exists {
+		if _, exists := m.urls[newID]; exists {
 			continue
 		}
 
-		record := fileRecord{
+		id = newID
+		record = fileRecord{
 			UUID:        strconv.Itoa(m.nextUUID),
 			ShortURL:    id,
 			OriginalURL: originalURL,
@@ -79,16 +83,17 @@ func (m *Memory) Save(originalURL string) (string, error) {
 		m.records = append(m.records, record)
 		m.nextUUID++
 
-		if err := m.save(); err != nil {
-			delete(m.urls, id)
-			delete(m.ids, originalURL)
-			m.records = m.records[:len(m.records)-1]
-			m.nextUUID--
-			return "", err
-		}
-
-		return id, nil
+		snapshot = cloneRecords(m.records)
+		break
 	}
+	m.mu.Unlock()
+
+	if err := m.save(snapshot); err != nil {
+		m.rollback(record)
+		return "", err
+	}
+
+	return id, nil
 }
 
 func (m *Memory) Find(id string) (string, error) {
@@ -130,27 +135,18 @@ func (m *Memory) load() error {
 		return err
 	}
 
-	maxUUID := 0
 	for _, record := range records {
 		m.records = append(m.records, record)
 		m.urls[record.ShortURL] = record.OriginalURL
 		m.ids[record.OriginalURL] = record.ShortURL
-
-		uuid, err := strconv.Atoi(record.UUID)
-		if err == nil && uuid > maxUUID {
-			maxUUID = uuid
-		}
 	}
 
-	if len(records) > maxUUID {
-		maxUUID = len(records)
-	}
-	m.nextUUID = maxUUID + 1
+	m.nextUUID = nextUUID(m.records)
 
 	return nil
 }
 
-func (m *Memory) save() error {
+func (m *Memory) save(records []fileRecord) error {
 	if m.filePath == "" {
 		return nil
 	}
@@ -162,12 +158,53 @@ func (m *Memory) save() error {
 		}
 	}
 
-	data, err := json.MarshalIndent(m.records, "", "  ")
+	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
 		return err
 	}
 
 	return os.WriteFile(m.filePath, data, 0644)
+}
+
+func (m *Memory) rollback(record fileRecord) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.ids[record.OriginalURL] == record.ShortURL {
+		delete(m.ids, record.OriginalURL)
+	}
+	if m.urls[record.ShortURL] == record.OriginalURL {
+		delete(m.urls, record.ShortURL)
+	}
+
+	for i, saved := range m.records {
+		if saved.UUID == record.UUID && saved.ShortURL == record.ShortURL {
+			m.records = append(m.records[:i], m.records[i+1:]...)
+			break
+		}
+	}
+
+	m.nextUUID = nextUUID(m.records)
+}
+
+func cloneRecords(records []fileRecord) []fileRecord {
+	return append([]fileRecord(nil), records...)
+}
+
+func nextUUID(records []fileRecord) int {
+	maxUUID := 0
+	for _, record := range records {
+		uuid, err := strconv.Atoi(record.UUID)
+		if err == nil && uuid > maxUUID {
+			maxUUID = uuid
+		}
+	}
+
+	if len(records) > maxUUID {
+		maxUUID = len(records)
+	}
+
+	return maxUUID + 1
 }
 
 func newID() (string, error) {
