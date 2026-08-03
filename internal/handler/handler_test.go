@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -48,9 +49,17 @@ func (f *fakeRepo) Find(id string) (string, error) {
 	return originalURL, nil
 }
 
+type fakePinger struct {
+	err error
+}
+
+func (p fakePinger) PingContext(context.Context) error {
+	return p.err
+}
+
 func TestCreate(t *testing.T) {
 	repo := newFakeRepo()
-	h := handler.New(repo, testBaseURL)
+	h := handler.New(repo, testBaseURL, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
 	req.Header.Set("Content-Type", "text/plain")
@@ -74,7 +83,7 @@ func TestCreate(t *testing.T) {
 
 func TestCreateJSON(t *testing.T) {
 	repo := newFakeRepo()
-	h := handler.New(repo, testBaseURL)
+	h := handler.New(repo, testBaseURL, nil)
 
 	req := httptest.NewRequest(
 		http.MethodPost,
@@ -123,7 +132,7 @@ func TestCreateJSON(t *testing.T) {
 func TestRedirect(t *testing.T) {
 	repo := newFakeRepo()
 	repo.urlByID["abc12345"] = "https://practicum.yandex.ru/"
-	h := handler.New(repo, testBaseURL)
+	h := handler.New(repo, testBaseURL, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/abc12345", nil)
 	rec := httptest.NewRecorder()
@@ -135,6 +144,65 @@ func TestRedirect(t *testing.T) {
 	}
 	if got := rec.Header().Get("Location"); got != "https://practicum.yandex.ru/" {
 		t.Fatalf("Location = %q, want %q", got, "https://practicum.yandex.ru/")
+	}
+}
+
+func TestPing(t *testing.T) {
+	tests := []struct {
+		name   string
+		pinger handler.Pinger
+		method string
+		want   int
+	}{
+		{
+			name:   "ok",
+			pinger: fakePinger{},
+			method: http.MethodGet,
+			want:   http.StatusOK,
+		},
+		{
+			name:   "ping error",
+			pinger: fakePinger{err: errors.New("db failed")},
+			method: http.MethodGet,
+			want:   http.StatusInternalServerError,
+		},
+		{
+			name:   "no connection",
+			method: http.MethodGet,
+			want:   http.StatusInternalServerError,
+		},
+		{
+			name:   "unsupported method",
+			pinger: fakePinger{},
+			method: http.MethodPost,
+			want:   http.StatusBadRequest,
+		},
+		{
+			name:   "not short id",
+			pinger: fakePinger{},
+			method: http.MethodGet,
+			want:   http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			repo.urlByID["ping"] = "https://practicum.yandex.ru/"
+			h := handler.New(repo, testBaseURL, tt.pinger)
+
+			req := httptest.NewRequest(tt.method, "/ping", nil)
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+			if rec.Code == http.StatusTemporaryRedirect {
+				t.Fatal("/ping was handled as short URL")
+			}
+		})
 	}
 }
 
@@ -172,7 +240,7 @@ func TestCreateJSONBadRequests(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := handler.New(newFakeRepo(), testBaseURL)
+			h := handler.New(newFakeRepo(), testBaseURL, nil)
 			req := httptest.NewRequest(tt.method, "/api/shorten", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
 
@@ -251,7 +319,7 @@ func TestBadRequests(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := handler.New(newFakeRepo(), testBaseURL)
+			h := handler.New(newFakeRepo(), testBaseURL, nil)
 			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
 
@@ -266,7 +334,7 @@ func TestBadRequests(t *testing.T) {
 
 func TestStorageErrors(t *testing.T) {
 	errStorage := errors.New("storage failed")
-	h := handler.New(errorRepo{err: errStorage}, testBaseURL)
+	h := handler.New(errorRepo{err: errStorage}, testBaseURL, nil)
 
 	tests := []struct {
 		name   string

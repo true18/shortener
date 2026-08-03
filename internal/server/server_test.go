@@ -3,7 +3,9 @@ package server_test
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -120,6 +122,58 @@ func TestBadGzipRequest(t *testing.T) {
 	}
 }
 
+func TestPing(t *testing.T) {
+	tests := []struct {
+		name   string
+		pinger fakePinger
+		method string
+		want   int
+	}{
+		{
+			name:   "ok",
+			method: http.MethodGet,
+			want:   http.StatusOK,
+		},
+		{
+			name:   "ping error",
+			pinger: fakePinger{err: errors.New("db failed")},
+			method: http.MethodGet,
+			want:   http.StatusInternalServerError,
+		},
+		{
+			name:   "unsupported method",
+			method: http.MethodPost,
+			want:   http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTestServerWithPinger(t, tt.pinger)
+			req := httptest.NewRequest(tt.method, "/ping", nil)
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+func TestPingWithoutDatabase(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
 func TestPlainTextResponseIsNotGzipped(t *testing.T) {
 	h := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
@@ -142,16 +196,34 @@ func TestPlainTextResponseIsNotGzipped(t *testing.T) {
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 
+	return newTestServerWithPinger(t, nil)
+}
+
+func newTestServerWithPinger(t *testing.T, pinger testPinger) http.Handler {
+	t.Helper()
+
 	h, err := server.New(config.Config{
 		BaseURL:         testBaseURL,
 		ServerAddress:   "localhost:8080",
 		FileStoragePath: t.TempDir() + "/storage.json",
-	}, zap.NewNop())
+	}, zap.NewNop(), pinger)
 	if err != nil {
 		t.Fatalf("server.New returned error: %v", err)
 	}
 
 	return h
+}
+
+type fakePinger struct {
+	err error
+}
+
+func (p fakePinger) PingContext(context.Context) error {
+	return p.err
+}
+
+type testPinger interface {
+	PingContext(context.Context) error
 }
 
 func gzipBody(t *testing.T, body string) io.Reader {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,13 +18,19 @@ import (
 type Handler struct {
 	repo    repository.Store
 	baseURL string
+	pinger  Pinger
 	router  chi.Router
 }
 
-func New(repo repository.Store, baseURL string) *Handler {
+type Pinger interface {
+	PingContext(ctx context.Context) error
+}
+
+func New(repo repository.Store, baseURL string, pinger Pinger) *Handler {
 	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
+		pinger:  pinger,
 	}
 
 	r := chi.NewRouter()
@@ -35,6 +42,7 @@ func New(repo repository.Store, baseURL string) *Handler {
 	})
 	r.Post("/", h.create)
 	r.Post("/api/shorten", h.createJSON)
+	r.Get("/ping", h.ping)
 	r.Get("/{id}", h.redirect)
 
 	h.router = r
@@ -131,6 +139,20 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Location", originalURL)
 	w.WriteHeader(http.StatusTemporaryRedirect)
+}
+
+func (h *Handler) ping(w http.ResponseWriter, r *http.Request) {
+	if h.pinger == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.pinger.PingContext(r.Context()); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) shorten(originalURL string) (string, error) {
