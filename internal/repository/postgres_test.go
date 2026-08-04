@@ -82,4 +82,30 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if _, err := store.Find("unknown"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Find unknown returned %v, want %v", err, ErrNotFound)
 	}
+
+	batchURL := fmt.Sprintf("https://batch.example.com/%d", time.Now().UnixNano())
+	results, err := store.SaveBatch([]BatchItem{
+		{CorrelationID: "1", OriginalURL: batchURL},
+		{CorrelationID: "2", OriginalURL: originalURL},
+	})
+	if err != nil {
+		t.Fatalf("SaveBatch returned error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results len = %d, want %d", len(results), 2)
+	}
+	if results[0].CorrelationID != "1" || results[1].CorrelationID != "2" {
+		t.Fatalf("correlation ids = %q, %q", results[0].CorrelationID, results[1].CorrelationID)
+	}
+	if results[1].ShortID != id {
+		t.Fatalf("existing short id = %q, want %q", results[1].ShortID, id)
+	}
+
+	got, err = store.Find(results[0].ShortID)
+	if err != nil {
+		t.Fatalf("Find batch URL returned error: %v", err)
+	}
+	if got != batchURL {
+		t.Fatalf("Find returned %q, want %q", got, batchURL)
+	}
 }

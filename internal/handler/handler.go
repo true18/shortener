@@ -41,6 +41,7 @@ func New(repo repository.Store, baseURL string, pinger Pinger) *Handler {
 		badRequest(w)
 	})
 	r.Post("/", h.create)
+	r.Post("/api/shorten/batch", h.createBatch)
 	r.Post("/api/shorten", h.createJSON)
 	r.Get("/ping", h.ping)
 	r.Get("/{id}", h.redirect)
@@ -120,6 +121,65 @@ func (h *Handler) createJSON(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) createBatch(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/shorten/batch" {
+		badRequest(w)
+		return
+	}
+	defer r.Body.Close()
+
+	var req []struct {
+		CorrelationID string `json:"correlation_id"`
+		OriginalURL   string `json:"original_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		badRequest(w)
+		return
+	}
+	if len(req) == 0 {
+		badRequest(w)
+		return
+	}
+
+	items := make([]repository.BatchItem, len(req))
+	for i, item := range req {
+		if strings.TrimSpace(item.CorrelationID) == "" {
+			badRequest(w)
+			return
+		}
+
+		originalURL := strings.TrimSpace(item.OriginalURL)
+		if !validURL(originalURL) {
+			badRequest(w)
+			return
+		}
+
+		items[i] = repository.BatchItem{
+			CorrelationID: item.CorrelationID,
+			OriginalURL:   originalURL,
+		}
+	}
+
+	results, err := h.repo.SaveBatch(items)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	resp := make([]struct {
+		CorrelationID string `json:"correlation_id"`
+		ShortURL      string `json:"short_url"`
+	}, len(results))
+	for i, item := range results {
+		resp[i].CorrelationID = item.CorrelationID
+		resp[i].ShortURL = h.shortURL(item.ShortID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
@@ -161,7 +221,11 @@ func (h *Handler) shorten(originalURL string) (string, error) {
 		return "", err
 	}
 
-	return h.baseURL + "/" + id, nil
+	return h.shortURL(id), nil
+}
+
+func (h *Handler) shortURL(id string) string {
+	return h.baseURL + "/" + id
 }
 
 func validURL(rawURL string) bool {

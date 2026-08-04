@@ -107,6 +107,77 @@ func TestShortenJSONWithGzipRequest(t *testing.T) {
 	}
 }
 
+func TestShortenBatchWithGzipResponse(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten/batch",
+		strings.NewReader(`[{"correlation_id":"1","original_url":"https://practicum.yandex.ru"}]`),
+	)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want %q", got, "gzip")
+	}
+
+	var resp []struct {
+		CorrelationID string `json:"correlation_id"`
+		ShortURL      string `json:"short_url"`
+	}
+	if err := json.Unmarshal(readGzip(t, rec.Body), &resp); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("response len = %d, want %d", len(resp), 1)
+	}
+	if resp[0].CorrelationID != "1" {
+		t.Fatalf("correlation_id = %q, want %q", resp[0].CorrelationID, "1")
+	}
+	if !strings.HasPrefix(resp[0].ShortURL, testBaseURL+"/") {
+		t.Fatalf("short_url = %q, want prefix %q", resp[0].ShortURL, testBaseURL+"/")
+	}
+}
+
+func TestShortenBatchWithGzipRequest(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten/batch",
+		gzipBody(t, `[{"correlation_id":"1","original_url":"https://practicum.yandex.ru"}]`),
+	)
+	req.Header.Set("Content-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var resp []struct {
+		CorrelationID string `json:"correlation_id"`
+		ShortURL      string `json:"short_url"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("response len = %d, want %d", len(resp), 1)
+	}
+	if resp[0].CorrelationID != "1" {
+		t.Fatalf("correlation_id = %q, want %q", resp[0].CorrelationID, "1")
+	}
+	if !strings.HasPrefix(resp[0].ShortURL, testBaseURL+"/") {
+		t.Fatalf("short_url = %q, want prefix %q", resp[0].ShortURL, testBaseURL+"/")
+	}
+}
+
 func TestBadGzipRequest(t *testing.T) {
 	h := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader("not gzip"))

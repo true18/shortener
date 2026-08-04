@@ -18,6 +18,45 @@ func NewPostgres(db *sql.DB) *Postgres {
 }
 
 func (p *Postgres) Save(originalURL string) (string, error) {
+	return savePostgresURL(p.db, originalURL)
+}
+
+func (p *Postgres) SaveBatch(items []BatchItem) ([]BatchResult, error) {
+	if len(items) == 0 {
+		return []BatchResult{}, nil
+	}
+
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	results := make([]BatchResult, len(items))
+	for i, item := range items {
+		id, err := savePostgresURL(tx, item.OriginalURL)
+		if err != nil {
+			return nil, err
+		}
+
+		results[i] = BatchResult{
+			CorrelationID: item.CorrelationID,
+			ShortID:       id,
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
+type postgresSaver interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func savePostgresURL(db postgresSaver, originalURL string) (string, error) {
 	for {
 		id, err := newID()
 		if err != nil {
@@ -25,7 +64,7 @@ func (p *Postgres) Save(originalURL string) (string, error) {
 		}
 
 		var savedID string
-		err = p.db.QueryRow(`
+		err = db.QueryRow(`
 			INSERT INTO urls (short_url, original_url)
 			VALUES ($1, $2)
 			ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url
