@@ -17,10 +17,11 @@ const (
 )
 
 type Config struct {
-	ServerAddress   string
-	BaseURL         string
-	FileStoragePath string
-	DatabaseDSN     string
+	ServerAddress      string
+	BaseURL            string
+	FileStoragePath    string
+	FileStoragePathSet bool
+	DatabaseDSN        string
 }
 
 func Parse(args []string) (Config, error) {
@@ -41,6 +42,12 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "f" {
+			cfg.FileStoragePathSet = true
+		}
+	})
+
 	if value, ok := os.LookupEnv(EnvServerAddress); ok {
 		cfg.ServerAddress = value
 	}
@@ -49,6 +56,7 @@ func Parse(args []string) (Config, error) {
 	}
 	if value, ok := os.LookupEnv(EnvFileStoragePath); ok {
 		cfg.FileStoragePath = value
+		cfg.FileStoragePathSet = true
 	}
 	if value, ok := os.LookupEnv(EnvDatabaseDSN); ok {
 		cfg.DatabaseDSN = value
