@@ -3,7 +3,11 @@ package server_test
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +20,12 @@ import (
 )
 
 const testBaseURL = "http://localhost:8080"
+
+const pingDriverName = "shortener_ping_test"
+
+func init() {
+	sql.Register(pingDriverName, pingDriver{})
+}
 
 func TestShortenJSONWithoutGzip(t *testing.T) {
 	h := newTestServer(t)
@@ -203,6 +213,30 @@ func TestPingWithoutDatabase(t *testing.T) {
 	}
 }
 
+func TestPingWithDatabase(t *testing.T) {
+	h := newTestServerWithDB(t, openPingDB(t, false))
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestPingWithDatabaseError(t *testing.T) {
+	h := newTestServerWithDB(t, openPingDB(t, true))
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
 func TestPingBadMethod(t *testing.T) {
 	h := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/ping", nil)
@@ -237,12 +271,18 @@ func TestPlainTextResponseIsNotGzipped(t *testing.T) {
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 
+	return newTestServerWithDB(t, nil)
+}
+
+func newTestServerWithDB(t *testing.T, db *sql.DB) http.Handler {
+	t.Helper()
+
 	h, err := server.New(config.Config{
 		BaseURL:            testBaseURL,
 		ServerAddress:      "localhost:8080",
 		FileStoragePath:    t.TempDir() + "/storage.json",
 		FileStoragePathSet: true,
-	}, zap.NewNop(), nil)
+	}, zap.NewNop(), db)
 	if err != nil {
 		t.Fatalf("server.New returned error: %v", err)
 	}
@@ -280,4 +320,54 @@ func readGzip(t *testing.T, body io.Reader) []byte {
 	}
 
 	return data
+}
+
+func openPingDB(t *testing.T, fail bool) *sql.DB {
+	t.Helper()
+
+	name := "ok"
+	if fail {
+		name = "fail"
+	}
+
+	db, err := sql.Open(pingDriverName, name)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	return db
+}
+
+type pingDriver struct{}
+
+func (pingDriver) Open(name string) (driver.Conn, error) {
+	conn := pingConn{}
+	if name == "fail" {
+		conn.err = errors.New("ping failed")
+	}
+
+	return conn, nil
+}
+
+type pingConn struct {
+	err error
+}
+
+func (c pingConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (c pingConn) Close() error {
+	return nil
+}
+
+func (c pingConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (c pingConn) Ping(context.Context) error {
+	return c.err
 }

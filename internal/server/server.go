@@ -24,9 +24,14 @@ const (
 var errDatabaseNotOpen = errors.New("database is not open")
 
 func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error) {
-	store, pinger, err := newStore(cfg, db)
+	store, err := newStore(cfg, db)
 	if err != nil {
 		return nil, err
+	}
+
+	var pinger handler.Pinger
+	if db != nil {
+		pinger = db
 	}
 
 	h := handler.New(store, cfg.BaseURL, pinger)
@@ -43,26 +48,26 @@ func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {
 	return http.ListenAndServe(cfg.ServerAddress, h)
 }
 
-func newStore(cfg config.Config, db *sql.DB) (repository.Store, handler.Pinger, error) {
+func newStore(cfg config.Config, db *sql.DB) (repository.Store, error) {
 	switch storageFor(cfg) {
 	case storagePostgres:
 		if db == nil {
-			return nil, nil, errDatabaseNotOpen
+			return nil, errDatabaseNotOpen
 		}
-		if err := migrations.Up(db); err != nil {
-			return nil, nil, err
+		if err := migrations.Up(cfg.DatabaseDSN); err != nil {
+			return nil, err
 		}
 
-		return repository.NewPostgres(db), db, nil
+		return repository.NewPostgres(db), nil
 	case storageFile:
 		store, err := repository.NewFile(cfg.FileStoragePath)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
-		return store, nil, nil
+		return store, nil
 	default:
-		return repository.NewMemory(), nil, nil
+		return repository.NewMemory(), nil
 	}
 }
 

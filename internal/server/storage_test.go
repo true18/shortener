@@ -63,7 +63,7 @@ func TestStorageFor(t *testing.T) {
 }
 
 func TestNewPostgresStorageWithoutDatabase(t *testing.T) {
-	_, _, err := newStore(config.Config{DatabaseDSN: "postgres://localhost/shortener"}, nil)
+	_, err := newStore(config.Config{DatabaseDSN: "postgres://localhost/shortener"}, nil)
 	if !errors.Is(err, errDatabaseNotOpen) {
 		t.Fatalf("newStore returned %v, want %v", err, errDatabaseNotOpen)
 	}
