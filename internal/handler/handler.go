@@ -74,14 +74,18 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shortURL, err := h.shorten(originalURL)
+	shortURL, exists, err := h.shorten(originalURL)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusCreated)
+	if exists {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
 	_, _ = w.Write([]byte(shortURL))
 }
 
@@ -106,14 +110,18 @@ func (h *Handler) createJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shortURL, err := h.shorten(originalURL)
+	shortURL, exists, err := h.shorten(originalURL)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	if exists {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
 	_ = json.NewEncoder(w).Encode(struct {
 		Result string `json:"result"`
 	}{
@@ -215,13 +223,16 @@ func (h *Handler) ping(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *Handler) shorten(originalURL string) (string, error) {
+func (h *Handler) shorten(originalURL string) (string, bool, error) {
 	id, err := h.repo.Save(originalURL)
+	if errors.Is(err, repository.ErrURLExists) {
+		return h.shortURL(id), true, nil
+	}
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
-	return h.shortURL(id), nil
+	return h.shortURL(id), false, nil
 }
 
 func (h *Handler) shortURL(id string) string {

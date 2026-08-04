@@ -71,8 +71,8 @@ func TestFileStorageSavesAndLoadsRecords(t *testing.T) {
 	}
 
 	sameID, err := loaded.Save("http://yandex.ru")
-	if err != nil {
-		t.Fatalf("Save existing URL returned error: %v", err)
+	if !errors.Is(err, ErrURLExists) {
+		t.Fatalf("Save existing URL returned %v, want %v", err, ErrURLExists)
 	}
 	if sameID != firstID {
 		t.Fatalf("sameID = %q, want %q", sameID, firstID)
@@ -98,6 +98,23 @@ func TestFileStorageSavesAndLoadsRecords(t *testing.T) {
 	}
 	if records[2].UUID != "3" || records[2].ShortURL != thirdID || records[2].OriginalURL != "http://example.com" {
 		t.Fatalf("third record = %+v", records[2])
+	}
+}
+
+func TestMemorySaveDuplicate(t *testing.T) {
+	store := NewMemory()
+
+	id, err := store.Save("http://yandex.ru")
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	sameID, err := store.Save("http://yandex.ru")
+	if !errors.Is(err, ErrURLExists) {
+		t.Fatalf("Save existing URL returned %v, want %v", err, ErrURLExists)
+	}
+	if sameID != id {
+		t.Fatalf("sameID = %q, want %q", sameID, id)
 	}
 }
 
@@ -142,6 +159,41 @@ func TestMemorySaveBatch(t *testing.T) {
 	}
 	if id == "" {
 		t.Fatal("Save returned empty id")
+	}
+}
+
+func TestFileStorageSaveDuplicateDoesNotAddRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.json")
+
+	store, err := NewFile(path)
+	if err != nil {
+		t.Fatalf("NewFile returned error: %v", err)
+	}
+
+	id, err := store.Save("http://yandex.ru")
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	sameID, err := store.Save("http://yandex.ru")
+	if !errors.Is(err, ErrURLExists) {
+		t.Fatalf("Save existing URL returned %v, want %v", err, ErrURLExists)
+	}
+	if sameID != id {
+		t.Fatalf("sameID = %q, want %q", sameID, id)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+
+	var records []fileRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records len = %d, want %d", len(records), 1)
 	}
 }
 

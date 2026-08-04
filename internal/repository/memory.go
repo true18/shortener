@@ -47,12 +47,31 @@ func NewFile(path string) (*Memory, error) {
 }
 
 func (m *Memory) Save(originalURL string) (string, error) {
-	results, err := m.SaveBatch([]BatchItem{{OriginalURL: originalURL}})
+	if m.filePath != "" {
+		m.fileMu.Lock()
+		defer m.fileMu.Unlock()
+	}
+
+	m.mu.Lock()
+	if id, ok := m.ids[originalURL]; ok {
+		m.mu.Unlock()
+		return id, ErrURLExists
+	}
+
+	record, err := m.addURLLocked(originalURL)
 	if err != nil {
+		m.mu.Unlock()
+		return "", err
+	}
+	snapshot := cloneRecords(m.records)
+	m.mu.Unlock()
+
+	if err := m.save(snapshot); err != nil {
+		m.rollback([]fileRecord{record})
 		return "", err
 	}
 
-	return results[0].ShortID, nil
+	return record.ShortURL, nil
 }
 
 func (m *Memory) SaveBatch(items []BatchItem) ([]BatchResult, error) {
@@ -162,21 +181,12 @@ func (m *Memory) saveBatchLocked(items []BatchItem) ([]BatchResult, []fileRecord
 	for i, item := range items {
 		id, ok := m.ids[item.OriginalURL]
 		if !ok {
-			newID, err := m.newIDLocked()
+			record, err := m.addURLLocked(item.OriginalURL)
 			if err != nil {
 				return nil, nil, false, err
 			}
 
-			id = newID
-			record := fileRecord{
-				UUID:        strconv.Itoa(m.nextUUID),
-				ShortURL:    id,
-				OriginalURL: item.OriginalURL,
-			}
-			m.urls[id] = item.OriginalURL
-			m.ids[item.OriginalURL] = id
-			m.records = append(m.records, record)
-			m.nextUUID++
+			id = record.ShortURL
 			added = append(added, record)
 		}
 
@@ -187,6 +197,25 @@ func (m *Memory) saveBatchLocked(items []BatchItem) ([]BatchResult, []fileRecord
 	}
 
 	return results, added, len(added) > 0, nil
+}
+
+func (m *Memory) addURLLocked(originalURL string) (fileRecord, error) {
+	id, err := m.newIDLocked()
+	if err != nil {
+		return fileRecord{}, err
+	}
+
+	record := fileRecord{
+		UUID:        strconv.Itoa(m.nextUUID),
+		ShortURL:    id,
+		OriginalURL: originalURL,
+	}
+	m.urls[id] = originalURL
+	m.ids[originalURL] = id
+	m.records = append(m.records, record)
+	m.nextUUID++
+
+	return record, nil
 }
 
 func (m *Memory) newIDLocked() (string, error) {

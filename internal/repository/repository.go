@@ -2,7 +2,10 @@ package repository
 
 import "errors"
 
-var ErrNotFound = errors.New("url not found")
+var (
+	ErrNotFound  = errors.New("url not found")
+	ErrURLExists = errors.New("url already exists")
+)
 
 type Store interface {
 	Save(originalURL string) (string, error)

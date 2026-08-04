@@ -31,7 +31,7 @@ func newFakeRepo() *fakeRepo {
 
 func (f *fakeRepo) Save(originalURL string) (string, error) {
 	if id, ok := f.idByURL[originalURL]; ok {
-		return id, nil
+		return id, repository.ErrURLExists
 	}
 
 	id := f.nextID()
@@ -44,10 +44,13 @@ func (f *fakeRepo) Save(originalURL string) (string, error) {
 func (f *fakeRepo) SaveBatch(items []repository.BatchItem) ([]repository.BatchResult, error) {
 	results := make([]repository.BatchResult, len(items))
 	for i, item := range items {
-		id, err := f.Save(item.OriginalURL)
-		if err != nil {
-			return nil, err
+		id, ok := f.idByURL[item.OriginalURL]
+		if !ok {
+			id = f.nextID()
+			f.idByURL[item.OriginalURL] = id
+			f.urlByID[id] = item.OriginalURL
 		}
+
 		results[i] = repository.BatchResult{
 			CorrelationID: item.CorrelationID,
 			ShortID:       id,
@@ -110,6 +113,46 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestCreateDuplicate(t *testing.T) {
+	repo := newFakeRepo()
+	h := handler.New(repo, testBaseURL, nil)
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
+	firstRec := httptest.NewRecorder()
+	h.ServeHTTP(firstRec, firstReq)
+
+	if firstRec.Code != http.StatusCreated {
+		t.Fatalf("first status = %d, want %d", firstRec.Code, http.StatusCreated)
+	}
+	shortURL := firstRec.Body.String()
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
+	secondRec := httptest.NewRecorder()
+	h.ServeHTTP(secondRec, secondReq)
+
+	if secondRec.Code != http.StatusConflict {
+		t.Fatalf("second status = %d, want %d", secondRec.Code, http.StatusConflict)
+	}
+	if got := secondRec.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want %q", got, "text/plain")
+	}
+	if got := secondRec.Body.String(); got != shortURL {
+		t.Fatalf("body = %q, want %q", got, shortURL)
+	}
+
+	id := strings.TrimPrefix(shortURL, testBaseURL+"/")
+	redirectReq := httptest.NewRequest(http.MethodGet, "/"+id, nil)
+	redirectRec := httptest.NewRecorder()
+	h.ServeHTTP(redirectRec, redirectReq)
+
+	if redirectRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect status = %d, want %d", redirectRec.Code, http.StatusTemporaryRedirect)
+	}
+	if got := redirectRec.Header().Get("Location"); got != "https://practicum.yandex.ru/" {
+		t.Fatalf("Location = %q, want %q", got, "https://practicum.yandex.ru/")
+	}
+}
+
 func TestCreateJSON(t *testing.T) {
 	repo := newFakeRepo()
 	h := handler.New(repo, testBaseURL, nil)
@@ -148,6 +191,66 @@ func TestCreateJSON(t *testing.T) {
 	redirectReq := httptest.NewRequest(http.MethodGet, "/"+id, nil)
 	redirectRec := httptest.NewRecorder()
 
+	h.ServeHTTP(redirectRec, redirectReq)
+
+	if redirectRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect status = %d, want %d", redirectRec.Code, http.StatusTemporaryRedirect)
+	}
+	if got := redirectRec.Header().Get("Location"); got != "https://practicum.yandex.ru" {
+		t.Fatalf("Location = %q, want %q", got, "https://practicum.yandex.ru")
+	}
+}
+
+func TestCreateJSONDuplicate(t *testing.T) {
+	repo := newFakeRepo()
+	h := handler.New(repo, testBaseURL, nil)
+
+	firstReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten",
+		strings.NewReader(`{"url":"https://practicum.yandex.ru"}`),
+	)
+	firstRec := httptest.NewRecorder()
+	h.ServeHTTP(firstRec, firstReq)
+
+	if firstRec.Code != http.StatusCreated {
+		t.Fatalf("first status = %d, want %d", firstRec.Code, http.StatusCreated)
+	}
+	var firstResp struct {
+		Result string `json:"result"`
+	}
+	if err := json.NewDecoder(firstRec.Body).Decode(&firstResp); err != nil {
+		t.Fatalf("Decode first response: %v", err)
+	}
+
+	secondReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten",
+		strings.NewReader(`{"url":"https://practicum.yandex.ru"}`),
+	)
+	secondRec := httptest.NewRecorder()
+	h.ServeHTTP(secondRec, secondReq)
+
+	if secondRec.Code != http.StatusConflict {
+		t.Fatalf("second status = %d, want %d", secondRec.Code, http.StatusConflict)
+	}
+	if got := secondRec.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+
+	var secondResp struct {
+		Result string `json:"result"`
+	}
+	if err := json.NewDecoder(secondRec.Body).Decode(&secondResp); err != nil {
+		t.Fatalf("Decode second response: %v", err)
+	}
+	if secondResp.Result != firstResp.Result {
+		t.Fatalf("result = %q, want %q", secondResp.Result, firstResp.Result)
+	}
+
+	id := strings.TrimPrefix(secondResp.Result, testBaseURL+"/")
+	redirectReq := httptest.NewRequest(http.MethodGet, "/"+id, nil)
+	redirectRec := httptest.NewRecorder()
 	h.ServeHTTP(redirectRec, redirectReq)
 
 	if redirectRec.Code != http.StatusTemporaryRedirect {

@@ -64,8 +64,8 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	sameID, err := store.Save(originalURL)
-	if err != nil {
-		t.Fatalf("Save existing URL returned error: %v", err)
+	if !errors.Is(err, ErrURLExists) {
+		t.Fatalf("Save existing URL returned %v, want %v", err, ErrURLExists)
 	}
 	if sameID != id {
 		t.Fatalf("sameID = %q, want %q", sameID, id)

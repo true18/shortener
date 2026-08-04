@@ -18,7 +18,15 @@ func NewPostgres(db *sql.DB) *Postgres {
 }
 
 func (p *Postgres) Save(originalURL string) (string, error) {
-	return savePostgresURL(p.db, originalURL)
+	id, exists, err := savePostgresURL(p.db, originalURL)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return id, ErrURLExists
+	}
+
+	return id, nil
 }
 
 func (p *Postgres) SaveBatch(items []BatchItem) ([]BatchResult, error) {
@@ -34,7 +42,7 @@ func (p *Postgres) SaveBatch(items []BatchItem) ([]BatchResult, error) {
 
 	results := make([]BatchResult, len(items))
 	for i, item := range items {
-		id, err := savePostgresURL(tx, item.OriginalURL)
+		id, _, err := savePostgresURL(tx, item.OriginalURL)
 		if err != nil {
 			return nil, err
 		}
@@ -56,29 +64,50 @@ type postgresSaver interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
-func savePostgresURL(db postgresSaver, originalURL string) (string, error) {
+func savePostgresURL(db postgresSaver, originalURL string) (string, bool, error) {
 	for {
 		id, err := newID()
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 
 		var savedID string
 		err = db.QueryRow(`
 			INSERT INTO urls (short_url, original_url)
 			VALUES ($1, $2)
-			ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url
+			ON CONFLICT (original_url) DO NOTHING
 			RETURNING short_url
 		`, id, originalURL).Scan(&savedID)
 		if err == nil {
-			return savedID, nil
+			return savedID, false, nil
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			savedID, err := findShortURL(db, originalURL)
+			if err != nil {
+				return "", false, err
+			}
+			return savedID, true, nil
 		}
 		if isShortURLConflict(err) {
 			continue
 		}
 
+		return "", false, err
+	}
+}
+
+func findShortURL(db postgresSaver, originalURL string) (string, error) {
+	var id string
+	err := db.QueryRow(`
+		SELECT short_url
+		FROM urls
+		WHERE original_url = $1
+	`, originalURL).Scan(&id)
+	if err != nil {
 		return "", err
 	}
+
+	return id, nil
 }
 
 func (p *Postgres) Find(id string) (string, error) {
