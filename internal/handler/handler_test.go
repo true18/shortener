@@ -10,26 +10,31 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/handler"
 	"github.com/true18/shortener/internal/repository"
 )
 
 const testBaseURL = "http://localhost:8080"
+const testUserID = "user-1"
 
 type fakeRepo struct {
-	idByURL map[string]string
-	urlByID map[string]string
-	next    int
+	idByURL  map[string]string
+	urlByID  map[string]string
+	userByID map[string]string
+	order    []string
+	next     int
 }
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		idByURL: make(map[string]string),
-		urlByID: make(map[string]string),
+		idByURL:  make(map[string]string),
+		urlByID:  make(map[string]string),
+		userByID: make(map[string]string),
 	}
 }
 
-func (f *fakeRepo) Save(originalURL string) (string, error) {
+func (f *fakeRepo) Save(originalURL string, userID string) (string, error) {
 	if id, ok := f.idByURL[originalURL]; ok {
 		return id, repository.ErrURLExists
 	}
@@ -37,11 +42,13 @@ func (f *fakeRepo) Save(originalURL string) (string, error) {
 	id := f.nextID()
 	f.idByURL[originalURL] = id
 	f.urlByID[id] = originalURL
+	f.userByID[id] = userID
+	f.order = append(f.order, id)
 
 	return id, nil
 }
 
-func (f *fakeRepo) SaveBatch(items []repository.BatchItem) ([]repository.BatchResult, error) {
+func (f *fakeRepo) SaveBatch(items []repository.BatchItem, userID string) ([]repository.BatchResult, error) {
 	results := make([]repository.BatchResult, len(items))
 	for i, item := range items {
 		id, ok := f.idByURL[item.OriginalURL]
@@ -49,6 +56,8 @@ func (f *fakeRepo) SaveBatch(items []repository.BatchItem) ([]repository.BatchRe
 			id = f.nextID()
 			f.idByURL[item.OriginalURL] = id
 			f.urlByID[id] = item.OriginalURL
+			f.userByID[id] = userID
+			f.order = append(f.order, id)
 		}
 
 		results[i] = repository.BatchResult{
@@ -67,6 +76,22 @@ func (f *fakeRepo) Find(id string) (string, error) {
 	}
 
 	return originalURL, nil
+}
+
+func (f *fakeRepo) FindByUserID(userID string) ([]repository.UserURL, error) {
+	urls := make([]repository.UserURL, 0)
+	for _, id := range f.order {
+		if f.userByID[id] != userID {
+			continue
+		}
+
+		urls = append(urls, repository.UserURL{
+			ShortID:     id,
+			OriginalURL: f.urlByID[id],
+		})
+	}
+
+	return urls, nil
 }
 
 func (f *fakeRepo) nextID() string {
@@ -97,7 +122,7 @@ func TestCreate(t *testing.T) {
 	req.Header.Set("Content-Type", "text/plain")
 	rec := httptest.NewRecorder()
 
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, withUser(req))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -119,7 +144,7 @@ func TestCreateDuplicate(t *testing.T) {
 
 	firstReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
 	firstRec := httptest.NewRecorder()
-	h.ServeHTTP(firstRec, firstReq)
+	h.ServeHTTP(firstRec, withUser(firstReq))
 
 	if firstRec.Code != http.StatusCreated {
 		t.Fatalf("first status = %d, want %d", firstRec.Code, http.StatusCreated)
@@ -128,7 +153,7 @@ func TestCreateDuplicate(t *testing.T) {
 
 	secondReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
 	secondRec := httptest.NewRecorder()
-	h.ServeHTTP(secondRec, secondReq)
+	h.ServeHTTP(secondRec, withUser(secondReq))
 
 	if secondRec.Code != http.StatusConflict {
 		t.Fatalf("second status = %d, want %d", secondRec.Code, http.StatusConflict)
@@ -165,7 +190,7 @@ func TestCreateJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, withUser(req))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -211,7 +236,7 @@ func TestCreateJSONDuplicate(t *testing.T) {
 		strings.NewReader(`{"url":"https://practicum.yandex.ru"}`),
 	)
 	firstRec := httptest.NewRecorder()
-	h.ServeHTTP(firstRec, firstReq)
+	h.ServeHTTP(firstRec, withUser(firstReq))
 
 	if firstRec.Code != http.StatusCreated {
 		t.Fatalf("first status = %d, want %d", firstRec.Code, http.StatusCreated)
@@ -229,7 +254,7 @@ func TestCreateJSONDuplicate(t *testing.T) {
 		strings.NewReader(`{"url":"https://practicum.yandex.ru"}`),
 	)
 	secondRec := httptest.NewRecorder()
-	h.ServeHTTP(secondRec, secondReq)
+	h.ServeHTTP(secondRec, withUser(secondReq))
 
 	if secondRec.Code != http.StatusConflict {
 		t.Fatalf("second status = %d, want %d", secondRec.Code, http.StatusConflict)
@@ -276,7 +301,7 @@ func TestCreateBatch(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, withUser(req))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -307,7 +332,7 @@ func TestCreateBatch(t *testing.T) {
 
 func TestCreateBatchExistingURL(t *testing.T) {
 	repo := newFakeRepo()
-	id, err := repo.Save("https://practicum.yandex.ru")
+	id, err := repo.Save("https://practicum.yandex.ru", testUserID)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
@@ -320,7 +345,7 @@ func TestCreateBatchExistingURL(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, withUser(req))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -415,6 +440,84 @@ func TestPing(t *testing.T) {
 				t.Fatal("/ping was handled as short URL")
 			}
 		})
+	}
+}
+
+func TestUserURLsNoContent(t *testing.T) {
+	h := handler.New(newFakeRepo(), testBaseURL, nil)
+	req := withUser(httptest.NewRequest(http.MethodGet, "/api/user/urls", nil))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestUserURLs(t *testing.T) {
+	repo := newFakeRepo()
+	id, err := repo.Save("https://practicum.yandex.ru", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	_, err = repo.Save("https://example.com", "other-user")
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	h := handler.New(repo, testBaseURL, nil)
+
+	req := withUser(httptest.NewRequest(http.MethodGet, "/api/user/urls", nil))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+
+	var resp []struct {
+		ShortURL    string `json:"short_url"`
+		OriginalURL string `json:"original_url"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("response len = %d, want %d", len(resp), 1)
+	}
+	if resp[0].ShortURL != testBaseURL+"/"+id {
+		t.Fatalf("short_url = %q, want %q", resp[0].ShortURL, testBaseURL+"/"+id)
+	}
+	if resp[0].OriginalURL != "https://practicum.yandex.ru" {
+		t.Fatalf("original_url = %q", resp[0].OriginalURL)
+	}
+}
+
+func TestUserURLsUnauthorized(t *testing.T) {
+	h := handler.New(newFakeRepo(), testBaseURL, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestUserURLsBadMethod(t *testing.T) {
+	h := handler.New(newFakeRepo(), testBaseURL, nil)
+	req := withUser(httptest.NewRequest(http.MethodPost, "/api/user/urls", nil))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
@@ -638,6 +741,9 @@ func TestStorageErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
+			if tt.method == http.MethodPost {
+				req = withUser(req)
+			}
 			rec := httptest.NewRecorder()
 
 			h.ServeHTTP(rec, req)
@@ -653,14 +759,22 @@ type errorRepo struct {
 	err error
 }
 
-func (r errorRepo) Save(string) (string, error) {
+func (r errorRepo) Save(string, string) (string, error) {
 	return "", r.err
 }
 
-func (r errorRepo) SaveBatch([]repository.BatchItem) ([]repository.BatchResult, error) {
+func (r errorRepo) SaveBatch([]repository.BatchItem, string) ([]repository.BatchResult, error) {
 	return nil, r.err
 }
 
 func (r errorRepo) Find(string) (string, error) {
 	return "", r.err
+}
+
+func (r errorRepo) FindByUserID(string) ([]repository.UserURL, error) {
+	return nil, r.err
+}
+
+func withUser(req *http.Request) *http.Request {
+	return req.WithContext(auth.WithUserID(req.Context(), testUserID))
 }

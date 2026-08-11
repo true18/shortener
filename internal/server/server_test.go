@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/config"
 	"github.com/true18/shortener/internal/server"
 	"go.uber.org/zap"
@@ -268,6 +269,169 @@ func TestPlainTextResponseIsNotGzipped(t *testing.T) {
 	}
 }
 
+func TestUserURLsNoContentAndCookie(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if cookie := responseCookie(rec.Result()); cookie == nil {
+		t.Fatal("auth cookie was not set")
+	}
+}
+
+func TestUserURLsAfterPlainTextShorten(t *testing.T) {
+	h := newTestServer(t)
+	createReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
+	createRec := httptest.NewRecorder()
+
+	h.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d", createRec.Code, http.StatusCreated)
+	}
+	cookie := responseCookie(createRec.Result())
+	if cookie == nil {
+		t.Fatal("auth cookie was not set")
+	}
+	shortURL := createRec.Body.String()
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil)
+	listReq.AddCookie(cookie)
+	listReq.Header.Set("Accept-Encoding", "gzip")
+	listRec := httptest.NewRecorder()
+
+	h.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want %d", listRec.Code, http.StatusOK)
+	}
+	if got := listRec.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want %q", got, "gzip")
+	}
+
+	var resp []struct {
+		ShortURL    string `json:"short_url"`
+		OriginalURL string `json:"original_url"`
+	}
+	if err := json.Unmarshal(readGzip(t, listRec.Body), &resp); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("response len = %d, want %d", len(resp), 1)
+	}
+	if resp[0].ShortURL != shortURL {
+		t.Fatalf("short_url = %q, want %q", resp[0].ShortURL, shortURL)
+	}
+	if resp[0].OriginalURL != "https://practicum.yandex.ru/" {
+		t.Fatalf("original_url = %q", resp[0].OriginalURL)
+	}
+}
+
+func TestUserURLsAfterJSONAndBatchShorten(t *testing.T) {
+	h := newTestServer(t)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(`{"url":"https://practicum.yandex.ru"}`))
+	createRec := httptest.NewRecorder()
+
+	h.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d", createRec.Code, http.StatusCreated)
+	}
+	cookie := responseCookie(createRec.Result())
+	if cookie == nil {
+		t.Fatal("auth cookie was not set")
+	}
+
+	batchReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten/batch",
+		strings.NewReader(`[{"correlation_id":"1","original_url":"https://example.com"}]`),
+	)
+	batchReq.AddCookie(cookie)
+	batchRec := httptest.NewRecorder()
+
+	h.ServeHTTP(batchRec, batchReq)
+
+	if batchRec.Code != http.StatusCreated {
+		t.Fatalf("batch status = %d, want %d", batchRec.Code, http.StatusCreated)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil)
+	listReq.AddCookie(cookie)
+	listRec := httptest.NewRecorder()
+
+	h.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want %d", listRec.Code, http.StatusOK)
+	}
+
+	var resp []struct {
+		ShortURL    string `json:"short_url"`
+		OriginalURL string `json:"original_url"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode response: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Fatalf("response len = %d, want %d", len(resp), 2)
+	}
+	if resp[0].OriginalURL != "https://practicum.yandex.ru" || resp[1].OriginalURL != "https://example.com" {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestUserURLsDoNotIncludeOtherUsersURLs(t *testing.T) {
+	h := newTestServer(t)
+	createReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
+	createRec := httptest.NewRecorder()
+
+	h.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d", createRec.Code, http.StatusCreated)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil)
+	listRec := httptest.NewRecorder()
+
+	h.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusNoContent {
+		t.Fatalf("list status = %d, want %d", listRec.Code, http.StatusNoContent)
+	}
+}
+
+func TestUserURLsSignedEmptyCookie(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil)
+	req.AddCookie(auth.NewCookie(""))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestUserURLsBadMethod(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/user/urls", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 
@@ -320,6 +484,16 @@ func readGzip(t *testing.T, body io.Reader) []byte {
 	}
 
 	return data
+}
+
+func responseCookie(resp *http.Response) *http.Cookie {
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == auth.CookieName {
+			return cookie
+		}
+	}
+
+	return nil
 }
 
 func openPingDB(t *testing.T, fail bool) *sql.DB {

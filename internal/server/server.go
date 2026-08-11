@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/config"
 	"github.com/true18/shortener/internal/handler"
 	"github.com/true18/shortener/internal/middleware"
@@ -36,7 +37,7 @@ func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error
 
 	h := handler.New(store, cfg.BaseURL, pinger)
 
-	return middleware.RequestLogger(logger)(middleware.Gzip(h)), nil
+	return middleware.RequestLogger(logger)(auth.Middleware(middleware.Gzip(h))), nil
 }
 
 func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {

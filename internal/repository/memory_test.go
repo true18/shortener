@@ -8,6 +8,11 @@ import (
 	"testing"
 )
 
+const (
+	testUserID  = "user-1"
+	otherUserID = "user-2"
+)
+
 func TestNewFileMissingFileStartsEmpty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "storage.json")
 
@@ -29,11 +34,11 @@ func TestFileStorageSavesAndLoadsRecords(t *testing.T) {
 		t.Fatalf("NewFile returned error: %v", err)
 	}
 
-	firstID, err := store.Save("http://yandex.ru")
+	firstID, err := store.Save("http://yandex.ru", testUserID)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
-	secondID, err := store.Save("http://ya.ru")
+	secondID, err := store.Save("http://ya.ru", otherUserID)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
@@ -50,10 +55,10 @@ func TestFileStorageSavesAndLoadsRecords(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatalf("records len = %d, want %d", len(records), 2)
 	}
-	if records[0].UUID != "1" || records[0].ShortURL != firstID || records[0].OriginalURL != "http://yandex.ru" {
+	if records[0].UUID != "1" || records[0].ShortURL != firstID || records[0].OriginalURL != "http://yandex.ru" || records[0].UserID != testUserID {
 		t.Fatalf("first record = %+v", records[0])
 	}
-	if records[1].UUID != "2" || records[1].ShortURL != secondID || records[1].OriginalURL != "http://ya.ru" {
+	if records[1].UUID != "2" || records[1].ShortURL != secondID || records[1].OriginalURL != "http://ya.ru" || records[1].UserID != otherUserID {
 		t.Fatalf("second record = %+v", records[1])
 	}
 
@@ -70,7 +75,15 @@ func TestFileStorageSavesAndLoadsRecords(t *testing.T) {
 		t.Fatalf("originalURL = %q, want %q", originalURL, "http://yandex.ru")
 	}
 
-	sameID, err := loaded.Save("http://yandex.ru")
+	userURLs, err := loaded.FindByUserID(testUserID)
+	if err != nil {
+		t.Fatalf("FindByUserID returned error: %v", err)
+	}
+	if len(userURLs) != 1 || userURLs[0].ShortID != firstID || userURLs[0].OriginalURL != "http://yandex.ru" {
+		t.Fatalf("user urls = %+v", userURLs)
+	}
+
+	sameID, err := loaded.Save("http://yandex.ru", otherUserID)
 	if !errors.Is(err, ErrURLExists) {
 		t.Fatalf("Save existing URL returned %v, want %v", err, ErrURLExists)
 	}
@@ -78,7 +91,7 @@ func TestFileStorageSavesAndLoadsRecords(t *testing.T) {
 		t.Fatalf("sameID = %q, want %q", sameID, firstID)
 	}
 
-	thirdID, err := loaded.Save("http://example.com")
+	thirdID, err := loaded.Save("http://example.com", testUserID)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
@@ -96,7 +109,7 @@ func TestFileStorageSavesAndLoadsRecords(t *testing.T) {
 	if len(records) != 3 {
 		t.Fatalf("records len = %d, want %d", len(records), 3)
 	}
-	if records[2].UUID != "3" || records[2].ShortURL != thirdID || records[2].OriginalURL != "http://example.com" {
+	if records[2].UUID != "3" || records[2].ShortURL != thirdID || records[2].OriginalURL != "http://example.com" || records[2].UserID != testUserID {
 		t.Fatalf("third record = %+v", records[2])
 	}
 }
@@ -104,17 +117,56 @@ func TestFileStorageSavesAndLoadsRecords(t *testing.T) {
 func TestMemorySaveDuplicate(t *testing.T) {
 	store := NewMemory()
 
-	id, err := store.Save("http://yandex.ru")
+	id, err := store.Save("http://yandex.ru", testUserID)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
 
-	sameID, err := store.Save("http://yandex.ru")
+	sameID, err := store.Save("http://yandex.ru", otherUserID)
 	if !errors.Is(err, ErrURLExists) {
 		t.Fatalf("Save existing URL returned %v, want %v", err, ErrURLExists)
 	}
 	if sameID != id {
 		t.Fatalf("sameID = %q, want %q", sameID, id)
+	}
+
+	otherURLs, err := store.FindByUserID(otherUserID)
+	if err != nil {
+		t.Fatalf("FindByUserID returned error: %v", err)
+	}
+	if len(otherURLs) != 0 {
+		t.Fatalf("other user urls = %+v, want empty", otherURLs)
+	}
+}
+
+func TestMemoryFindByUserID(t *testing.T) {
+	store := NewMemory()
+
+	firstID, err := store.Save("http://yandex.ru", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	secondID, err := store.Save("http://ya.ru", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	_, err = store.Save("http://example.com", otherUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	urls, err := store.FindByUserID(testUserID)
+	if err != nil {
+		t.Fatalf("FindByUserID returned error: %v", err)
+	}
+	if len(urls) != 2 {
+		t.Fatalf("urls len = %d, want %d", len(urls), 2)
+	}
+	if urls[0].ShortID != firstID || urls[0].OriginalURL != "http://yandex.ru" {
+		t.Fatalf("first url = %+v", urls[0])
+	}
+	if urls[1].ShortID != secondID || urls[1].OriginalURL != "http://ya.ru" {
+		t.Fatalf("second url = %+v", urls[1])
 	}
 }
 
@@ -124,7 +176,7 @@ func TestMemorySaveBatch(t *testing.T) {
 	results, err := store.SaveBatch([]BatchItem{
 		{CorrelationID: "1", OriginalURL: "http://yandex.ru"},
 		{CorrelationID: "2", OriginalURL: "http://ya.ru"},
-	})
+	}, testUserID)
 	if err != nil {
 		t.Fatalf("SaveBatch returned error: %v", err)
 	}
@@ -145,7 +197,7 @@ func TestMemorySaveBatch(t *testing.T) {
 
 	again, err := store.SaveBatch([]BatchItem{
 		{CorrelationID: "3", OriginalURL: "http://yandex.ru"},
-	})
+	}, otherUserID)
 	if err != nil {
 		t.Fatalf("SaveBatch existing URL returned error: %v", err)
 	}
@@ -153,7 +205,7 @@ func TestMemorySaveBatch(t *testing.T) {
 		t.Fatalf("short id = %q, want %q", again[0].ShortID, results[0].ShortID)
 	}
 
-	id, err := store.Save("http://example.com")
+	id, err := store.Save("http://example.com", testUserID)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
@@ -170,12 +222,12 @@ func TestFileStorageSaveDuplicateDoesNotAddRecord(t *testing.T) {
 		t.Fatalf("NewFile returned error: %v", err)
 	}
 
-	id, err := store.Save("http://yandex.ru")
+	id, err := store.Save("http://yandex.ru", testUserID)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
 
-	sameID, err := store.Save("http://yandex.ru")
+	sameID, err := store.Save("http://yandex.ru", otherUserID)
 	if !errors.Is(err, ErrURLExists) {
 		t.Fatalf("Save existing URL returned %v, want %v", err, ErrURLExists)
 	}
@@ -208,7 +260,7 @@ func TestFileStorageSaveBatch(t *testing.T) {
 	results, err := store.SaveBatch([]BatchItem{
 		{CorrelationID: "1", OriginalURL: "http://yandex.ru"},
 		{CorrelationID: "2", OriginalURL: "http://ya.ru"},
-	})
+	}, testUserID)
 	if err != nil {
 		t.Fatalf("SaveBatch returned error: %v", err)
 	}
@@ -228,10 +280,10 @@ func TestFileStorageSaveBatch(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatalf("records len = %d, want %d", len(records), 2)
 	}
-	if records[0].UUID != "1" || records[0].ShortURL != results[0].ShortID || records[0].OriginalURL != "http://yandex.ru" {
+	if records[0].UUID != "1" || records[0].ShortURL != results[0].ShortID || records[0].OriginalURL != "http://yandex.ru" || records[0].UserID != testUserID {
 		t.Fatalf("first record = %+v", records[0])
 	}
-	if records[1].UUID != "2" || records[1].ShortURL != results[1].ShortID || records[1].OriginalURL != "http://ya.ru" {
+	if records[1].UUID != "2" || records[1].ShortURL != results[1].ShortID || records[1].OriginalURL != "http://ya.ru" || records[1].UserID != testUserID {
 		t.Fatalf("second record = %+v", records[1])
 	}
 
@@ -248,9 +300,17 @@ func TestFileStorageSaveBatch(t *testing.T) {
 		t.Fatalf("originalURL = %q, want %q", originalURL, "http://ya.ru")
 	}
 
+	userURLs, err := loaded.FindByUserID(testUserID)
+	if err != nil {
+		t.Fatalf("FindByUserID returned error: %v", err)
+	}
+	if len(userURLs) != 2 {
+		t.Fatalf("user urls len = %d, want %d", len(userURLs), 2)
+	}
+
 	again, err := loaded.SaveBatch([]BatchItem{
 		{CorrelationID: "3", OriginalURL: "http://yandex.ru"},
-	})
+	}, otherUserID)
 	if err != nil {
 		t.Fatalf("SaveBatch existing URL returned error: %v", err)
 	}
@@ -258,7 +318,7 @@ func TestFileStorageSaveBatch(t *testing.T) {
 		t.Fatalf("short id = %q, want %q", again[0].ShortID, results[0].ShortID)
 	}
 
-	id, err := loaded.Save("http://example.com")
+	id, err := loaded.Save("http://example.com", testUserID)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
@@ -275,5 +335,34 @@ func TestNewFileBadJSONReturnsError(t *testing.T) {
 
 	if _, err := NewFile(path); err == nil {
 		t.Fatal("NewFile returned nil error")
+	}
+}
+
+func TestFileStorageLoadsOldRecordsWithoutUserID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.json")
+	data := []byte(`[{"uuid":"1","short_url":"abc12345","original_url":"http://yandex.ru"}]`)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	store, err := NewFile(path)
+	if err != nil {
+		t.Fatalf("NewFile returned error: %v", err)
+	}
+
+	originalURL, err := store.Find("abc12345")
+	if err != nil {
+		t.Fatalf("Find returned error: %v", err)
+	}
+	if originalURL != "http://yandex.ru" {
+		t.Fatalf("originalURL = %q, want %q", originalURL, "http://yandex.ru")
+	}
+
+	urls, err := store.FindByUserID(testUserID)
+	if err != nil {
+		t.Fatalf("FindByUserID returned error: %v", err)
+	}
+	if len(urls) != 0 {
+		t.Fatalf("urls len = %d, want %d", len(urls), 0)
 	}
 }

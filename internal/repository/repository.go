@@ -8,9 +8,10 @@ var (
 )
 
 type Store interface {
-	Save(originalURL string) (string, error)
-	SaveBatch(items []BatchItem) ([]BatchResult, error)
+	Save(originalURL string, userID string) (string, error)
+	SaveBatch(items []BatchItem, userID string) ([]BatchResult, error)
 	Find(id string) (string, error)
+	FindByUserID(userID string) ([]UserURL, error)
 }
 
 type BatchItem struct {
@@ -21,4 +22,9 @@ type BatchItem struct {
 type BatchResult struct {
 	CorrelationID string
 	ShortID       string
+}
+
+type UserURL struct {
+	ShortID     string
+	OriginalURL string
 }
