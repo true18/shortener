@@ -112,16 +112,20 @@ func findShortURL(db postgresSaver, originalURL string) (string, error) {
 
 func (p *Postgres) Find(id string) (string, error) {
 	var originalURL string
+	var deleted bool
 	err := p.db.QueryRow(`
-		SELECT original_url
+		SELECT original_url, is_deleted
 		FROM urls
 		WHERE short_url = $1
-	`, id).Scan(&originalURL)
+	`, id).Scan(&originalURL, &deleted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", err
+	}
+	if deleted {
+		return "", ErrDeleted
 	}
 
 	return originalURL, nil
@@ -132,6 +136,7 @@ func (p *Postgres) FindByUserID(userID string) ([]UserURL, error) {
 		SELECT short_url, original_url
 		FROM urls
 		WHERE user_id = $1
+		  AND is_deleted = FALSE
 		ORDER BY id
 	`, userID)
 	if err != nil {
@@ -153,6 +158,31 @@ func (p *Postgres) FindByUserID(userID string) ([]UserURL, error) {
 	}
 
 	return urls, nil
+}
+
+func (p *Postgres) DeleteUserURLs(ids []string, userID string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, id := range ids {
+		if _, err := tx.Exec(`
+			UPDATE urls
+			SET is_deleted = TRUE
+			WHERE short_url = $1
+			  AND user_id = $2
+		`, id, userID); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 func isShortURLConflict(err error) bool {

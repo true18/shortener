@@ -124,6 +124,21 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if got != batchURL {
 		t.Fatalf("Find returned %q, want %q", got, batchURL)
 	}
+
+	if err := store.DeleteUserURLs([]string{results[0].ShortID}, testUserID); err != nil {
+		t.Fatalf("DeleteUserURLs returned error: %v", err)
+	}
+	if _, err := store.Find(results[0].ShortID); !errors.Is(err, ErrDeleted) {
+		t.Fatalf("Find deleted returned %v, want %v", err, ErrDeleted)
+	}
+
+	userURLs, err = store.FindByUserID(testUserID)
+	if err != nil {
+		t.Fatalf("FindByUserID returned error: %v", err)
+	}
+	if hasUserURL(userURLs, results[0].ShortID, batchURL) {
+		t.Fatalf("deleted url is still visible: %+v", userURLs)
+	}
 }
 
 func hasUserURL(urls []UserURL, shortID string, originalURL string) bool {

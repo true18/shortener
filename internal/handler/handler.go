@@ -20,6 +20,7 @@ type Handler struct {
 	repo    repository.Store
 	baseURL string
 	pinger  Pinger
+	deletes DeleteEnqueuer
 	router  chi.Router
 }
 
@@ -27,11 +28,16 @@ type Pinger interface {
 	PingContext(ctx context.Context) error
 }
 
-func New(repo repository.Store, baseURL string, pinger Pinger) *Handler {
+type DeleteEnqueuer interface {
+	EnqueueDelete(userID string, ids []string) error
+}
+
+func New(repo repository.Store, baseURL string, pinger Pinger, deletes DeleteEnqueuer) *Handler {
 	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		pinger:  pinger,
+		deletes: deletes,
 	}
 
 	r := chi.NewRouter()
@@ -45,6 +51,7 @@ func New(repo repository.Store, baseURL string, pinger Pinger) *Handler {
 	r.Post("/api/shorten/batch", h.createBatch)
 	r.Post("/api/shorten", h.createJSON)
 	r.Get("/api/user/urls", h.userURLs)
+	r.Delete("/api/user/urls", h.deleteUserURLs)
 	r.Get("/ping", h.ping)
 	r.Get("/{id}", h.redirect)
 
@@ -220,6 +227,10 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 		badRequest(w)
 		return
 	}
+	if errors.Is(err, repository.ErrDeleted) {
+		w.WriteHeader(http.StatusGone)
+		return
+	}
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -263,6 +274,49 @@ func (h *Handler) userURLs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) deleteUserURLs(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/user/urls" {
+		badRequest(w)
+		return
+	}
+	defer r.Body.Close()
+
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		unauthorized(w)
+		return
+	}
+
+	var ids []string
+	if err := json.NewDecoder(r.Body).Decode(&ids); err != nil {
+		badRequest(w)
+		return
+	}
+	if len(ids) == 0 {
+		badRequest(w)
+		return
+	}
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			badRequest(w)
+			return
+		}
+	}
+
+	if h.deletes == nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	deleteIDs := append([]string(nil), ids...)
+	if err := h.deletes.EnqueueDelete(userID, deleteIDs); err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (h *Handler) ping(w http.ResponseWriter, r *http.Request) {

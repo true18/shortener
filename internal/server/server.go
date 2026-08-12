@@ -11,6 +11,7 @@ import (
 	"github.com/true18/shortener/internal/middleware"
 	"github.com/true18/shortener/internal/migrations"
 	"github.com/true18/shortener/internal/repository"
+	"github.com/true18/shortener/internal/service"
 	"go.uber.org/zap"
 )
 
@@ -35,7 +36,8 @@ func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error
 		pinger = db
 	}
 
-	h := handler.New(store, cfg.BaseURL, pinger)
+	deletes := service.NewDeleteQueue(store)
+	h := handler.New(store, cfg.BaseURL, pinger, deletes)
 
 	return middleware.RequestLogger(logger)(auth.Middleware(middleware.Gzip(h))), nil
 }

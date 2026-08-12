@@ -170,6 +170,45 @@ func TestMemoryFindByUserID(t *testing.T) {
 	}
 }
 
+func TestMemoryDeleteUserURLs(t *testing.T) {
+	store := NewMemory()
+
+	firstID, err := store.Save("http://yandex.ru", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	secondID, err := store.Save("http://ya.ru", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	otherID, err := store.Save("http://example.com", otherUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	if err := store.DeleteUserURLs([]string{firstID, otherID, "unknown"}, testUserID); err != nil {
+		t.Fatalf("DeleteUserURLs returned error: %v", err)
+	}
+
+	if _, err := store.Find(firstID); !errors.Is(err, ErrDeleted) {
+		t.Fatalf("Find deleted returned %v, want %v", err, ErrDeleted)
+	}
+	if got, err := store.Find(secondID); err != nil || got != "http://ya.ru" {
+		t.Fatalf("Find second = %q, %v", got, err)
+	}
+	if got, err := store.Find(otherID); err != nil || got != "http://example.com" {
+		t.Fatalf("Find other = %q, %v", got, err)
+	}
+
+	urls, err := store.FindByUserID(testUserID)
+	if err != nil {
+		t.Fatalf("FindByUserID returned error: %v", err)
+	}
+	if len(urls) != 1 || urls[0].ShortID != secondID {
+		t.Fatalf("user urls = %+v", urls)
+	}
+}
+
 func TestMemorySaveBatch(t *testing.T) {
 	store := NewMemory()
 
@@ -324,6 +363,67 @@ func TestFileStorageSaveBatch(t *testing.T) {
 	}
 	if id == "" {
 		t.Fatal("Save returned empty id")
+	}
+}
+
+func TestFileStorageDeleteUserURLs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.json")
+
+	store, err := NewFile(path)
+	if err != nil {
+		t.Fatalf("NewFile returned error: %v", err)
+	}
+
+	id, err := store.Save("http://yandex.ru", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	otherID, err := store.Save("http://example.com", otherUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	if err := store.DeleteUserURLs([]string{id, otherID}, testUserID); err != nil {
+		t.Fatalf("DeleteUserURLs returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+
+	var records []fileRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want %d", len(records), 2)
+	}
+	if !records[0].Deleted {
+		t.Fatalf("first record deleted = false, want true: %+v", records[0])
+	}
+	if records[1].Deleted {
+		t.Fatalf("second record deleted = true, want false: %+v", records[1])
+	}
+
+	loaded, err := NewFile(path)
+	if err != nil {
+		t.Fatalf("NewFile returned error: %v", err)
+	}
+
+	if _, err := loaded.Find(id); !errors.Is(err, ErrDeleted) {
+		t.Fatalf("Find deleted returned %v, want %v", err, ErrDeleted)
+	}
+	if got, err := loaded.Find(otherID); err != nil || got != "http://example.com" {
+		t.Fatalf("Find other = %q, %v", got, err)
+	}
+
+	urls, err := loaded.FindByUserID(testUserID)
+	if err != nil {
+		t.Fatalf("FindByUserID returned error: %v", err)
+	}
+	if len(urls) != 0 {
+		t.Fatalf("user urls = %+v, want empty", urls)
 	}
 }
 
