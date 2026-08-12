@@ -54,7 +54,7 @@ func newStore(cfg config.Config, db *sql.DB) (repository.Store, error) {
 		if db == nil {
 			return nil, errDatabaseNotOpen
 		}
-		if err := migrations.Up(cfg.DatabaseDSN); err != nil {
+		if err := migrations.Up(db); err != nil {
 			return nil, err
 		}
 

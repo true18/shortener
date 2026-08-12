@@ -42,15 +42,15 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Skip("TEST_DATABASE_DSN is not set")
 	}
 
-	if err := migrations.Up(dsn); err != nil {
-		t.Fatalf("migrations.Up returned error: %v", err)
-	}
-
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("Open returned error: %v", err)
 	}
 	defer db.Close()
+
+	if err := migrations.Up(db); err != nil {
+		t.Fatalf("migrations.Up returned error: %v", err)
+	}
 
 	store := NewPostgres(db)
 	originalURL := fmt.Sprintf("https://example.com/%d", time.Now().UnixNano())
