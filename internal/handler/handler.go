@@ -298,11 +298,14 @@ func (h *Handler) deleteUserURLs(w http.ResponseWriter, r *http.Request) {
 		badRequest(w)
 		return
 	}
+	trimmedIDs := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if strings.TrimSpace(id) == "" {
+		id = strings.TrimSpace(id)
+		if id == "" {
 			badRequest(w)
 			return
 		}
+		trimmedIDs = append(trimmedIDs, id)
 	}
 
 	if h.deletes == nil {
@@ -310,8 +313,7 @@ func (h *Handler) deleteUserURLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deleteIDs := append([]string(nil), ids...)
-	if err := h.deletes.EnqueueDelete(userID, deleteIDs); err != nil {
+	if err := h.deletes.EnqueueDelete(userID, trimmedIDs); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}

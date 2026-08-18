@@ -3,9 +3,15 @@ package service
 import (
 	"errors"
 	"sync"
+	"time"
 )
 
 const deleteQueueSize = 1024
+
+const (
+	deleteBatchSize     = 100
+	deleteFlushInterval = 50 * time.Millisecond
+)
 
 var (
 	ErrDeleteQueueClosed = errors.New("delete queue closed")
@@ -72,12 +78,48 @@ func (q *DeleteQueue) Close() {
 }
 
 func (q *DeleteQueue) run() {
+	ticker := time.NewTicker(deleteFlushInterval)
+	defer ticker.Stop()
+
+	groups := make(map[string][]string)
+	count := 0
+	flush := func() {
+		for userID, ids := range groups {
+			_ = q.store.DeleteUserURLs(ids, userID)
+		}
+		groups = make(map[string][]string)
+		count = 0
+	}
+	add := func(task DeleteTask) {
+		groups[task.UserID] = append(groups[task.UserID], task.ShortIDs...)
+		count += len(task.ShortIDs)
+	}
+	drain := func() {
+		for {
+			select {
+			case task := <-q.tasks:
+				add(task)
+			default:
+				return
+			}
+		}
+	}
+
 	for {
 		select {
 		case <-q.done:
+			drain()
+			flush()
 			return
 		case task := <-q.tasks:
-			_ = q.store.DeleteUserURLs(task.ShortIDs, task.UserID)
+			add(task)
+			if count >= deleteBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			if count > 0 {
+				flush()
+			}
 		}
 	}
 }

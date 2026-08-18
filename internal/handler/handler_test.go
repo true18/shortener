@@ -590,7 +590,7 @@ func TestDeleteUserURLs(t *testing.T) {
 	}
 	h := newHandler(repo)
 
-	req := withUser(httptest.NewRequest(http.MethodDelete, "/api/user/urls", strings.NewReader(`["`+id+`"]`)))
+	req := withUser(httptest.NewRequest(http.MethodDelete, "/api/user/urls", strings.NewReader(`["  `+id+`  "]`)))
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)

@@ -165,24 +165,13 @@ func (p *Postgres) DeleteUserURLs(ids []string, userID string) error {
 		return nil
 	}
 
-	tx, err := p.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	for _, id := range ids {
-		if _, err := tx.Exec(`
-			UPDATE urls
-			SET is_deleted = TRUE
-			WHERE short_url = $1
-			  AND user_id = $2
-		`, id, userID); err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit()
+	_, err := p.db.Exec(`
+		UPDATE urls
+		SET is_deleted = TRUE
+		WHERE short_url = ANY($1::text[])
+		  AND user_id = $2
+	`, ids, userID)
+	return err
 }
 
 func isShortURLConflict(err error) bool {

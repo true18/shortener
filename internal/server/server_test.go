@@ -450,7 +450,7 @@ func TestDeleteUserURLs(t *testing.T) {
 	shortURL := createRec.Body.String()
 	id := strings.TrimPrefix(shortURL, testBaseURL+"/")
 
-	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/user/urls", strings.NewReader(`["`+id+`"]`))
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/user/urls", strings.NewReader(`["  `+id+`  "]`))
 	deleteReq.AddCookie(cookie)
 	deleteRec := httptest.NewRecorder()
 
