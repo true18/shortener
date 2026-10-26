@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/true18/shortener/internal/audit"
 	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/handler"
 	"github.com/true18/shortener/internal/repository"
+	"go.uber.org/zap"
 )
 
 const testBaseURL = "http://localhost:8080"
@@ -136,6 +139,17 @@ func newHandler(repo repository.Store) http.Handler {
 
 func newHandlerWithPinger(repo repository.Store, pinger handler.Pinger) http.Handler {
 	return handler.New(repo, testBaseURL, pinger, immediateDeleteQueue{repo: repo})
+}
+
+func newHandlerWithAudit(repo repository.Store, observer audit.Observer) http.Handler {
+	return handler.NewWithAudit(
+		repo,
+		testBaseURL,
+		nil,
+		immediateDeleteQueue{repo: repo},
+		observer,
+		zap.NewNop(),
+	)
 }
 
 type immediateDeleteQueue struct {
@@ -344,6 +358,179 @@ func TestCreateJSONDuplicate(t *testing.T) {
 	}
 	if got := redirectRec.Header().Get("Location"); got != "https://practicum.yandex.ru" {
 		t.Fatalf("Location = %q, want %q", got, "https://practicum.yandex.ru")
+	}
+}
+
+func TestAuditSuccessfulHandlers(t *testing.T) {
+	repo := newFakeRepo()
+	observer := &recordingAuditObserver{}
+	h := newHandlerWithAudit(repo, observer)
+	started := time.Now().Unix()
+
+	plainReq := withUser(httptest.NewRequest(
+		http.MethodPost,
+		"/",
+		strings.NewReader("https://example.com/plain"),
+	))
+	plainRec := httptest.NewRecorder()
+	h.ServeHTTP(plainRec, plainReq)
+	if plainRec.Code != http.StatusCreated {
+		t.Fatalf("plain status = %d, want %d", plainRec.Code, http.StatusCreated)
+	}
+
+	jsonReq := withUser(httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten",
+		strings.NewReader(`{"url":"https://example.com/json"}`),
+	))
+	jsonRec := httptest.NewRecorder()
+	h.ServeHTTP(jsonRec, jsonReq)
+	if jsonRec.Code != http.StatusCreated {
+		t.Fatalf("JSON status = %d, want %d", jsonRec.Code, http.StatusCreated)
+	}
+
+	id := strings.TrimPrefix(plainRec.Body.String(), testBaseURL+"/")
+	followReq := withUser(httptest.NewRequest(http.MethodGet, "/"+id, nil))
+	followRec := httptest.NewRecorder()
+	h.ServeHTTP(followRec, followReq)
+	if followRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("follow status = %d, want %d", followRec.Code, http.StatusTemporaryRedirect)
+	}
+
+	events := observer.Events()
+	want := []audit.Event{
+		{Action: audit.ActionShorten, UserID: testUserID, URL: "https://example.com/plain"},
+		{Action: audit.ActionShorten, UserID: testUserID, URL: "https://example.com/json"},
+		{Action: audit.ActionFollow, UserID: testUserID, URL: "https://example.com/plain"},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("events = %+v, want %d events", events, len(want))
+	}
+	for i := range want {
+		if events[i].Action != want[i].Action || events[i].UserID != want[i].UserID || events[i].URL != want[i].URL {
+			t.Fatalf("event %d = %+v, want %+v", i, events[i], want[i])
+		}
+		if events[i].Timestamp < started || events[i].Timestamp > time.Now().Unix() {
+			t.Fatalf("event %d timestamp = %d", i, events[i].Timestamp)
+		}
+	}
+}
+
+func TestAuditSkipsDuplicateAndFailedRequests(t *testing.T) {
+	repo := newFakeRepo()
+	if _, err := repo.Save("https://example.com/duplicate", testUserID); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	observer := &recordingAuditObserver{}
+	h := newHandlerWithAudit(repo, observer)
+
+	duplicateReq := withUser(httptest.NewRequest(
+		http.MethodPost,
+		"/",
+		strings.NewReader("https://example.com/duplicate"),
+	))
+	duplicateRec := httptest.NewRecorder()
+	h.ServeHTTP(duplicateRec, duplicateReq)
+	if duplicateRec.Code != http.StatusConflict {
+		t.Fatalf("duplicate status = %d, want %d", duplicateRec.Code, http.StatusConflict)
+	}
+
+	missingReq := httptest.NewRequest(http.MethodGet, "/missing", nil)
+	missingRec := httptest.NewRecorder()
+	h.ServeHTTP(missingRec, missingReq)
+
+	id, err := repo.Save("https://example.com/deleted", testUserID)
+	if err != nil {
+		t.Fatalf("Save deleted URL: %v", err)
+	}
+	repo.deleted[id] = true
+	deletedReq := httptest.NewRequest(http.MethodGet, "/"+id, nil)
+	deletedRec := httptest.NewRecorder()
+	h.ServeHTTP(deletedRec, deletedReq)
+	if deletedRec.Code != http.StatusGone {
+		t.Fatalf("deleted status = %d, want %d", deletedRec.Code, http.StatusGone)
+	}
+
+	if events := observer.Events(); len(events) != 0 {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
+func TestAuditSkipsJSONDuplicate(t *testing.T) {
+	repo := newFakeRepo()
+	if _, err := repo.Save("https://example.com/duplicate", testUserID); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	observer := &recordingAuditObserver{}
+	h := newHandlerWithAudit(repo, observer)
+	req := withUser(httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten",
+		strings.NewReader(`{"url":"https://example.com/duplicate"}`),
+	))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+	if events := observer.Events(); len(events) != 0 {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
+func TestAuditStorageFailureDoesNotPublish(t *testing.T) {
+	observer := &recordingAuditObserver{}
+	h := newHandlerWithAudit(errorRepo{err: errors.New("save failed")}, observer)
+	req := withUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://example.com")))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	if events := observer.Events(); len(events) != 0 {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
+func TestAuditFailureDoesNotChangeResponse(t *testing.T) {
+	observer := &recordingAuditObserver{err: errors.New("audit failed")}
+	h := newHandlerWithAudit(newFakeRepo(), observer)
+	req := withUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://example.com")))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if len(observer.Events()) != 1 {
+		t.Fatalf("events = %+v, want one", observer.Events())
+	}
+}
+
+func TestFollowAuditOmitsUnavailableUserID(t *testing.T) {
+	repo := newFakeRepo()
+	id, err := repo.Save("https://example.com", testUserID)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	observer := &recordingAuditObserver{}
+	h := newHandlerWithAudit(repo, observer)
+	req := httptest.NewRequest(http.MethodGet, "/"+id, nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusTemporaryRedirect)
+	}
+	events := observer.Events()
+	if len(events) != 1 || events[0].UserID != "" {
+		t.Fatalf("events = %+v, want event without user ID", events)
 	}
 }
 
@@ -969,6 +1156,27 @@ func TestStorageErrors(t *testing.T) {
 
 type errorRepo struct {
 	err error
+}
+
+type recordingAuditObserver struct {
+	mu     sync.Mutex
+	events []audit.Event
+	err    error
+}
+
+func (o *recordingAuditObserver) Notify(_ context.Context, event audit.Event) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events = append(o.events, event)
+
+	return o.err
+}
+
+func (o *recordingAuditObserver) Events() []audit.Event {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return append([]audit.Event(nil), o.events...)
 }
 
 func (r errorRepo) Save(string, string) (string, error) {

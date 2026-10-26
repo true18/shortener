@@ -11,10 +11,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/true18/shortener/internal/audit"
 	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/config"
 	"github.com/true18/shortener/internal/server"
@@ -509,6 +512,66 @@ func TestDeleteUserURLsWithGzipRequest(t *testing.T) {
 	waitForStatus(t, h, httptest.NewRequest(http.MethodGet, "/"+id, nil), http.StatusGone)
 }
 
+func TestAuditFileAndHTTPObservers(t *testing.T) {
+	received := make(chan audit.Event, 1)
+	auditServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var event audit.Event
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Errorf("Decode audit event: %v", err)
+		}
+		received <- event
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer auditServer.Close()
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	h, err := server.New(config.Config{
+		BaseURL:       testBaseURL,
+		ServerAddress: "localhost:8080",
+		AuditFile:     auditPath,
+		AuditURL:      auditServer.URL,
+	}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("server.New returned error: %v", err)
+	}
+	if closer, ok := h.(io.Closer); ok {
+		t.Cleanup(func() {
+			if err := closer.Close(); err != nil {
+				t.Errorf("Close server: %v", err)
+			}
+		})
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://example.com/long"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var remoteEvent audit.Event
+	select {
+	case remoteEvent = <-received:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP observer did not receive event")
+	}
+	if remoteEvent.Action != audit.ActionShorten || remoteEvent.URL != "https://example.com/long" || remoteEvent.UserID == "" {
+		t.Fatalf("remote event = %+v", remoteEvent)
+	}
+
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var fileEvent audit.Event
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &fileEvent); err != nil {
+		t.Fatalf("Unmarshal file event: %v", err)
+	}
+	if fileEvent != remoteEvent {
+		t.Fatalf("file event = %+v, remote event = %+v", fileEvent, remoteEvent)
+	}
+}
+
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 
@@ -526,6 +589,13 @@ func newTestServerWithDB(t *testing.T, db *sql.DB) http.Handler {
 	}, zap.NewNop(), db)
 	if err != nil {
 		t.Fatalf("server.New returned error: %v", err)
+	}
+	if closer, ok := h.(io.Closer); ok {
+		t.Cleanup(func() {
+			if err := closer.Close(); err != nil {
+				t.Errorf("Close server: %v", err)
+			}
+		})
 	}
 
 	return h

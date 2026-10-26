@@ -10,6 +10,8 @@ func TestParseDefaults(t *testing.T) {
 	unsetEnv(t, EnvBaseURL)
 	unsetEnv(t, EnvFileStoragePath)
 	unsetEnv(t, EnvDatabaseDSN)
+	unsetEnv(t, EnvAuditFile)
+	unsetEnv(t, EnvAuditURL)
 
 	cfg, err := Parse(nil)
 	if err != nil {
@@ -30,6 +32,12 @@ func TestParseDefaults(t *testing.T) {
 	}
 	if cfg.DatabaseDSN != DefaultDatabaseDSN {
 		t.Fatalf("DatabaseDSN = %q, want %q", cfg.DatabaseDSN, DefaultDatabaseDSN)
+	}
+	if cfg.AuditFile != DefaultAuditFile {
+		t.Fatalf("AuditFile = %q, want %q", cfg.AuditFile, DefaultAuditFile)
+	}
+	if cfg.AuditURL != DefaultAuditURL {
+		t.Fatalf("AuditURL = %q, want %q", cfg.AuditURL, DefaultAuditURL)
 	}
 }
 
@@ -282,6 +290,76 @@ func TestParseUnknownFlag(t *testing.T) {
 
 	if _, err := Parse([]string{"-x"}); err == nil {
 		t.Fatal("Parse returned nil error")
+	}
+}
+
+func TestParseAuditFlags(t *testing.T) {
+	unsetEnv(t, EnvAuditFile)
+	unsetEnv(t, EnvAuditURL)
+
+	cfg, err := Parse([]string{
+		"--audit-file", "/tmp/audit.jsonl",
+		"--audit-url", "https://audit.example.com/events",
+	})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.AuditFile != "/tmp/audit.jsonl" {
+		t.Fatalf("AuditFile = %q", cfg.AuditFile)
+	}
+	if cfg.AuditURL != "https://audit.example.com/events" {
+		t.Fatalf("AuditURL = %q", cfg.AuditURL)
+	}
+}
+
+func TestParseAuditEnv(t *testing.T) {
+	t.Setenv(EnvAuditFile, "/tmp/env-audit.jsonl")
+	t.Setenv(EnvAuditURL, "http://audit.example.com/events")
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.AuditFile != "/tmp/env-audit.jsonl" {
+		t.Fatalf("AuditFile = %q", cfg.AuditFile)
+	}
+	if cfg.AuditURL != "http://audit.example.com/events" {
+		t.Fatalf("AuditURL = %q", cfg.AuditURL)
+	}
+}
+
+func TestParseAuditEnvOverridesFlags(t *testing.T) {
+	t.Setenv(EnvAuditFile, "/tmp/env-audit.jsonl")
+	t.Setenv(EnvAuditURL, "https://env.example.com/events")
+
+	cfg, err := Parse([]string{
+		"--audit-file", "/tmp/flag-audit.jsonl",
+		"--audit-url", "https://flag.example.com/events",
+	})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.AuditFile != "/tmp/env-audit.jsonl" {
+		t.Fatalf("AuditFile = %q", cfg.AuditFile)
+	}
+	if cfg.AuditURL != "https://env.example.com/events" {
+		t.Fatalf("AuditURL = %q", cfg.AuditURL)
+	}
+}
+
+func TestParseInvalidAuditURL(t *testing.T) {
+	unsetEnv(t, EnvAuditURL)
+
+	for _, rawURL := range []string{
+		"audit.example.com/events",
+		"ftp://audit.example.com/events",
+		"https:///events",
+	} {
+		t.Run(rawURL, func(t *testing.T) {
+			if _, err := Parse([]string{"--audit-url", rawURL}); err == nil {
+				t.Fatal("Parse returned nil error")
+			}
+		})
 	}
 }
 

@@ -8,10 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
+	"github.com/true18/shortener/internal/audit"
 	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/repository"
 )
@@ -21,6 +24,8 @@ type Handler struct {
 	baseURL string
 	pinger  Pinger
 	deletes DeleteEnqueuer
+	auditor audit.Observer
+	logger  *zap.Logger
 	router  chi.Router
 }
 
@@ -32,12 +37,31 @@ type DeleteEnqueuer interface {
 	EnqueueDelete(userID string, ids []string) error
 }
 
+// New creates a handler without audit delivery.
 func New(repo repository.Store, baseURL string, pinger Pinger, deletes DeleteEnqueuer) *Handler {
+	return NewWithAudit(repo, baseURL, pinger, deletes, nil, nil)
+}
+
+// NewWithAudit creates a handler that publishes successful shorten and follow events.
+func NewWithAudit(
+	repo repository.Store,
+	baseURL string,
+	pinger Pinger,
+	deletes DeleteEnqueuer,
+	auditor audit.Observer,
+	logger *zap.Logger,
+) *Handler {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
 	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		pinger:  pinger,
 		deletes: deletes,
+		auditor: auditor,
+		logger:  logger,
 	}
 
 	r := chi.NewRouter()
@@ -94,6 +118,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
+	if !exists {
+		h.audit(r.Context(), audit.ActionShorten, userID, originalURL)
+	}
 
 	w.Header().Set("Content-Type", "text/plain")
 	if exists {
@@ -135,6 +162,9 @@ func (h *Handler) createJSON(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
+	}
+	if !exists {
+		h.audit(r.Context(), audit.ActionShorten, userID, originalURL)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -235,6 +265,9 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
+
+	userID, _ := auth.UserIDFromContext(r.Context())
+	h.audit(r.Context(), audit.ActionFollow, userID, originalURL)
 
 	w.Header().Set("Location", originalURL)
 	w.WriteHeader(http.StatusTemporaryRedirect)
@@ -349,6 +382,22 @@ func (h *Handler) shorten(originalURL string, userID string) (string, bool, erro
 
 func (h *Handler) shortURL(id string) string {
 	return h.baseURL + "/" + id
+}
+
+func (h *Handler) audit(ctx context.Context, action string, userID string, originalURL string) {
+	if h.auditor == nil {
+		return
+	}
+
+	err := h.auditor.Notify(ctx, audit.Event{
+		Timestamp: time.Now().Unix(),
+		Action:    action,
+		UserID:    userID,
+		URL:       originalURL,
+	})
+	if err != nil {
+		h.logger.Error("audit delivery failed", zap.Error(err))
+	}
 }
 
 func validURL(rawURL string) bool {
