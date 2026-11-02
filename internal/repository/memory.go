@@ -65,12 +65,17 @@ func (m *Memory) Save(originalURL string, userID string) (string, error) {
 		m.mu.Unlock()
 		return "", err
 	}
-	snapshot := cloneRecords(m.records)
+	var snapshot []fileRecord
+	if m.filePath != "" {
+		snapshot = cloneRecords(m.records)
+	}
 	m.mu.Unlock()
 
-	if err := m.save(snapshot); err != nil {
-		m.rollback([]fileRecord{record})
-		return "", err
+	if m.filePath != "" {
+		if err := m.save(snapshot); err != nil {
+			m.rollback([]fileRecord{record})
+			return "", err
+		}
 	}
 
 	return record.ShortURL, nil

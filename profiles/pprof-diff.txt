@@ -1,0 +1,54 @@
+Command: pprof -top -diff_base=profiles/base.pprof profiles/result.pprof
+
+File: repository.test
+Type: alloc_space
+Time: 2026-11-03 00:45:56 MSK
+Showing nodes accounting for -141.36MB, 97.14% of 145.52MB total
+Dropped 20 nodes (cum <= 0.73MB)
+      flat  flat%   sum%        cum   cum%
+ -138.86MB 95.42% 95.42%  -138.86MB 95.42%  github.com/true18/shortener/internal/repository.cloneRecords (inline)
+   -1.50MB  1.03% 96.45%  -140.88MB 96.81%  github.com/true18/shortener/internal/repository.BenchmarkMemorySave
+      -1MB  0.69% 97.14%       -1MB  0.69%  crypto/rand.Int
+         0     0% 97.14%  -138.88MB 95.43%  github.com/true18/shortener/internal/repository.(*Memory).Save
+         0     0% 97.14%       -1MB  0.69%  github.com/true18/shortener/internal/repository.(*Memory).newIDLocked
+         0     0% 97.14%       -1MB  0.69%  github.com/true18/shortener/internal/repository.newID
+         0     0% 97.14%  -140.88MB 96.81%  testing.(*B).launch
+         0     0% 97.14%  -140.88MB 96.81%  testing.(*B).runN
+
+Command: pprof -sample_index=alloc_space -top -diff_base=profiles/base.pprof profiles/result.pprof
+
+File: repository.test
+Type: alloc_space
+Time: 2026-11-03 00:45:56 MSK
+Showing nodes accounting for -141.36MB, 97.14% of 145.52MB total
+Dropped 20 nodes (cum <= 0.73MB)
+      flat  flat%   sum%        cum   cum%
+ -138.86MB 95.42% 95.42%  -138.86MB 95.42%  github.com/true18/shortener/internal/repository.cloneRecords (inline)
+   -1.50MB  1.03% 96.45%  -140.88MB 96.81%  github.com/true18/shortener/internal/repository.BenchmarkMemorySave
+      -1MB  0.69% 97.14%       -1MB  0.69%  crypto/rand.Int
+         0     0% 97.14%  -138.88MB 95.43%  github.com/true18/shortener/internal/repository.(*Memory).Save
+         0     0% 97.14%       -1MB  0.69%  github.com/true18/shortener/internal/repository.(*Memory).newIDLocked
+         0     0% 97.14%       -1MB  0.69%  github.com/true18/shortener/internal/repository.newID
+         0     0% 97.14%  -140.88MB 96.81%  testing.(*B).launch
+         0     0% 97.14%  -140.88MB 96.81%  testing.(*B).runN
+
+Command: pprof -sample_index=inuse_space -top -diff_base=profiles/base.pprof profiles/result.pprof
+
+File: repository.test
+Type: inuse_space
+Time: 2026-11-03 00:45:56 MSK
+Showing nodes accounting for -2.02kB, 0.098% of 2059.06kB total
+Dropped 6 nodes (cum <= 10.29kB)
+      flat  flat%   sum%        cum   cum%
+   -2.02kB 0.098% 0.098%    -2.02kB 0.098%  runtime.mallocgc
+         0     0% 0.098%  -521.05kB 25.31%  runtime.itabAdd
+         0     0% 0.098%  -521.05kB 25.31%  runtime.itabsinit
+         0     0% 0.098%     -513kB 24.91%  runtime.mcall
+         0     0% 0.098%      513kB 24.91%  runtime.mstart
+         0     0% 0.098%      513kB 24.91%  runtime.mstart0
+         0     0% 0.098%      513kB 24.91%  runtime.mstart1
+         0     0% 0.098%   519.03kB 25.21%  runtime.newobject
+         0     0% 0.098%     -513kB 24.91%  runtime.park_m
+         0     0% 0.098%   519.03kB 25.21%  runtime.procresize
+         0     0% 0.098%    -2.02kB 0.098%  runtime.rt0_go
+         0     0% 0.098%    -2.02kB 0.098%  runtime.schedinit
