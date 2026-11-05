@@ -1,3 +1,4 @@
+// Package middleware contains HTTP handlers that add cross-cutting request behavior.
 package middleware
 
 import (
@@ -7,6 +8,7 @@ import (
 	"strings"
 )
 
+// Gzip decompresses gzip request bodies and compresses supported responses when requested.
 func Gzip(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.EqualFold(strings.TrimSpace(r.Header.Get("Content-Encoding")), "gzip") {
@@ -39,10 +41,12 @@ type gzipBody struct {
 	body   io.Closer
 }
 
+// Read reads bytes from the decompressed request body.
 func (b gzipBody) Read(p []byte) (int, error) {
 	return b.reader.Read(p)
 }
 
+// Close closes the decompressor and the original request body.
 func (b gzipBody) Close() error {
 	readerErr := b.reader.Close()
 	bodyErr := b.body.Close()
@@ -68,6 +72,7 @@ func newGzipResponseWriter(w http.ResponseWriter) *gzipResponseWriter {
 	}
 }
 
+// WriteHeader records the response status until the headers are sent.
 func (w *gzipResponseWriter) WriteHeader(status int) {
 	if w.wroteHeader {
 		return
@@ -77,6 +82,7 @@ func (w *gzipResponseWriter) WriteHeader(status int) {
 	w.wroteHeader = true
 }
 
+// Write sends response data, compressing it when its content type is supported.
 func (w *gzipResponseWriter) Write(data []byte) (int, error) {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
@@ -91,6 +97,7 @@ func (w *gzipResponseWriter) Write(data []byte) (int, error) {
 	return w.writer.Write(data)
 }
 
+// Close finishes compression and sends any deferred response headers.
 func (w *gzipResponseWriter) Close() error {
 	if w.writer != nil {
 		return w.writer.Close()

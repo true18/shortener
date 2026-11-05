@@ -1,3 +1,4 @@
+// Package handler implements the HTTP API for shortening and resolving URLs.
 package handler
 
 import (
@@ -19,6 +20,7 @@ import (
 	"github.com/true18/shortener/internal/repository"
 )
 
+// Handler routes URL API requests to a repository and its supporting services.
 type Handler struct {
 	repo    repository.Store
 	baseURL string
@@ -29,20 +31,24 @@ type Handler struct {
 	router  chi.Router
 }
 
+// Pinger checks the health of the database used by the server.
 type Pinger interface {
+	// PingContext reports whether the database is reachable within ctx.
 	PingContext(ctx context.Context) error
 }
 
+// DeleteEnqueuer accepts user-scoped URL deletion tasks for background processing.
 type DeleteEnqueuer interface {
+	// EnqueueDelete queues IDs for soft deletion by userID.
 	EnqueueDelete(userID string, ids []string) error
 }
 
-// New creates a handler without audit delivery.
+// New creates an HTTP handler without audit event delivery.
 func New(repo repository.Store, baseURL string, pinger Pinger, deletes DeleteEnqueuer) *Handler {
 	return NewWithAudit(repo, baseURL, pinger, deletes, nil, nil)
 }
 
-// NewWithAudit creates a handler that publishes successful shorten and follow events.
+// NewWithAudit creates a handler that publishes successful shorten and follow events to auditor.
 func NewWithAudit(
 	repo repository.Store,
 	baseURL string,
@@ -84,6 +90,7 @@ func NewWithAudit(
 	return h
 }
 
+// ServeHTTP dispatches a request to the matching URL API endpoint.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.router.ServeHTTP(w, r)
 }

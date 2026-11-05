@@ -1,3 +1,4 @@
+// Package service contains background services used by the URL server.
 package service
 
 import (
@@ -14,19 +15,27 @@ const (
 )
 
 var (
+	// ErrDeleteQueueClosed is returned when a deletion task is submitted after Close.
 	ErrDeleteQueueClosed = errors.New("delete queue closed")
-	ErrDeleteQueueFull   = errors.New("delete queue full")
+	// ErrDeleteQueueFull is returned when the buffered deletion queue has no capacity.
+	ErrDeleteQueueFull = errors.New("delete queue full")
 )
 
+// DeleteStore is the repository operation needed by DeleteQueue.
 type DeleteStore interface {
+	// DeleteUserURLs soft-deletes URLs belonging to userID.
 	DeleteUserURLs(ids []string, userID string) error
 }
 
+// DeleteTask groups short IDs that should be deleted for one user.
 type DeleteTask struct {
-	UserID   string
+	// UserID identifies the owner of the short URLs.
+	UserID string
+	// ShortIDs are the identifiers to soft-delete.
 	ShortIDs []string
 }
 
+// DeleteQueue batches user-scoped deletion requests for background processing.
 type DeleteQueue struct {
 	store  DeleteStore
 	tasks  chan DeleteTask
@@ -35,6 +44,7 @@ type DeleteQueue struct {
 	closed bool
 }
 
+// NewDeleteQueue starts a worker that combines queued deletion tasks into batches.
 func NewDeleteQueue(store DeleteStore) *DeleteQueue {
 	q := &DeleteQueue{
 		store: store,
@@ -46,6 +56,7 @@ func NewDeleteQueue(store DeleteStore) *DeleteQueue {
 	return q
 }
 
+// EnqueueDelete copies and queues IDs without waiting for repository deletion.
 func (q *DeleteQueue) EnqueueDelete(userID string, ids []string) error {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
@@ -67,6 +78,7 @@ func (q *DeleteQueue) EnqueueDelete(userID string, ids []string) error {
 	}
 }
 
+// Close stops the worker after it flushes tasks already in the queue.
 func (q *DeleteQueue) Close() {
 	q.mu.Lock()
 	defer q.mu.Unlock()

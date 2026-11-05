@@ -9,14 +9,17 @@ import (
 
 const uniqueViolation = "23505"
 
+// Postgres stores URL records in a PostgreSQL database.
 type Postgres struct {
 	db *sql.DB
 }
 
+// NewPostgres creates a store using an already-open database handle.
 func NewPostgres(db *sql.DB) *Postgres {
 	return &Postgres{db: db}
 }
 
+// Save stores an original URL and returns its short ID. A duplicate returns the existing ID with ErrURLExists.
 func (p *Postgres) Save(originalURL string, userID string) (string, error) {
 	id, exists, err := savePostgresURL(p.db, originalURL, userID)
 	if err != nil {
@@ -29,6 +32,7 @@ func (p *Postgres) Save(originalURL string, userID string) (string, error) {
 	return id, nil
 }
 
+// SaveBatch stores all items in one transaction and preserves their input order.
 func (p *Postgres) SaveBatch(items []BatchItem, userID string) ([]BatchResult, error) {
 	if len(items) == 0 {
 		return []BatchResult{}, nil
@@ -110,6 +114,7 @@ func findShortURL(db postgresSaver, originalURL string) (string, error) {
 	return id, nil
 }
 
+// Find returns an active original URL, or ErrNotFound or ErrDeleted.
 func (p *Postgres) Find(id string) (string, error) {
 	var originalURL string
 	var deleted bool
@@ -131,6 +136,7 @@ func (p *Postgres) Find(id string) (string, error) {
 	return originalURL, nil
 }
 
+// FindByUserID returns active URLs owned by userID.
 func (p *Postgres) FindByUserID(userID string) ([]UserURL, error) {
 	rows, err := p.db.Query(`
 		SELECT short_url, original_url
@@ -160,6 +166,7 @@ func (p *Postgres) FindByUserID(userID string) ([]UserURL, error) {
 	return urls, nil
 }
 
+// DeleteUserURLs soft-deletes matching IDs owned by userID; unknown and foreign IDs are ignored.
 func (p *Postgres) DeleteUserURLs(ids []string, userID string) error {
 	if len(ids) == 0 {
 		return nil

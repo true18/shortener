@@ -1,3 +1,4 @@
+// Package server assembles the URL service's storage, handlers, and middleware.
 package server
 
 import (
@@ -27,6 +28,7 @@ const (
 
 var errDatabaseNotOpen = errors.New("database is not open")
 
+// New builds the HTTP handler, initializes configured storage and audit observers, and owns their closers.
 func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error) {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -53,6 +55,7 @@ func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error
 	return &managedHandler{Handler: wrapped, closers: closers}, nil
 }
 
+// Run serves HTTP requests at cfg.ServerAddress and closes server-owned resources on exit.
 func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {
 	h, err := New(cfg, logger, db)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// RequestLogger logs each completed request's method, URI, status, size, and duration.
 func RequestLogger(logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,6 +41,7 @@ func newLogResponseWriter(w http.ResponseWriter) *logResponseWriter {
 	}
 }
 
+// WriteHeader records and forwards the first response status.
 func (w *logResponseWriter) WriteHeader(status int) {
 	if w.wroteHeader {
 		return
@@ -50,6 +52,7 @@ func (w *logResponseWriter) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
+// Write forwards response data and records the number of bytes written.
 func (w *logResponseWriter) Write(data []byte) (int, error) {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)

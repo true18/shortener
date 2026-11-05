@@ -16,14 +16,19 @@ const (
 
 // Event describes one auditable action.
 type Event struct {
-	Timestamp int64  `json:"ts"`
-	Action    string `json:"action"`
-	UserID    string `json:"user_id,omitempty"`
-	URL       string `json:"url"`
+	// Timestamp is the event time as Unix seconds.
+	Timestamp int64 `json:"ts"`
+	// Action identifies the audited operation.
+	Action string `json:"action"`
+	// UserID is omitted when the request has no authenticated user.
+	UserID string `json:"user_id,omitempty"`
+	// URL is the original URL involved in the operation.
+	URL string `json:"url"`
 }
 
 // Observer receives audit events.
 type Observer interface {
+	// Notify delivers event and reports any delivery failure.
 	Notify(ctx context.Context, event Event) error
 }
 
