@@ -102,10 +102,13 @@ func (m *Memory) SaveBatch(items []BatchItem, userID string) ([]BatchResult, err
 		m.mu.Unlock()
 		return nil, err
 	}
-	snapshot := cloneRecords(m.records)
+	var snapshot []fileRecord
+	if changed && m.filePath != "" {
+		snapshot = cloneRecords(m.records)
+	}
 	m.mu.Unlock()
 
-	if !changed {
+	if !changed || m.filePath == "" {
 		return results, nil
 	}
 	if err := m.save(snapshot); err != nil {
@@ -165,10 +168,13 @@ func (m *Memory) DeleteUserURLs(ids []string, userID string) error {
 
 	m.mu.Lock()
 	changed, changedIDs := m.deleteUserURLsLocked(ids, userID)
-	snapshot := cloneRecords(m.records)
+	var snapshot []fileRecord
+	if changed && m.filePath != "" {
+		snapshot = cloneRecords(m.records)
+	}
 	m.mu.Unlock()
 
-	if !changed {
+	if !changed || m.filePath == "" {
 		return nil
 	}
 	if err := m.save(snapshot); err != nil {
