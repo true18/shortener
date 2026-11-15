@@ -13,16 +13,20 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+}
+
+func run() error {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("config error: %w", err)
 	}
 
 	logger, err := zap.NewProduction()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "logger error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("logger error: %w", err)
 	}
 	defer func() {
 		_ = logger.Sync()
@@ -30,17 +34,16 @@ func main() {
 
 	db, err := openDB(cfg.DatabaseDSN)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "database error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("database error: %w", err)
 	}
 	if db != nil {
 		defer db.Close()
 	}
 
 	if err := server.Run(cfg, logger, db); err != nil {
-		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("server error: %w", err)
 	}
+	return nil
 }
 
 func openDB(dsn string) (*sql.DB, error) {
