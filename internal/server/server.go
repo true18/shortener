@@ -36,7 +36,7 @@ func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error
 	if err != nil {
 		return nil, err
 	}
-	publisher, closers, err := newAuditPublisher(cfg)
+	auditor, closers, err := newAuditPublisher(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -47,10 +47,10 @@ func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error
 	}
 
 	deletes := service.NewDeleteQueue(store)
-	h := handler.NewWithAudit(store, cfg.BaseURL, pinger, deletes, publisher, logger)
+	h := handler.NewWithAudit(store, cfg.BaseURL, pinger, deletes, auditor, logger)
 	wrapped := middleware.RequestLogger(logger)(auth.Middleware(middleware.Gzip(h)))
 
-	return &managedHandler{Handler: wrapped, closers: closers}, nil
+	return &managedHandler{Handler: wrapped, deletes: deletes, closers: closers}, nil
 }
 
 func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {
@@ -72,9 +72,14 @@ func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {
 type managedHandler struct {
 	http.Handler
 	closers []io.Closer
+	deletes *service.DeleteQueue
 }
 
 func (h *managedHandler) Close() error {
+	if h.deletes != nil {
+		h.deletes.Close()
+	}
+
 	var errs []error
 	for _, closer := range h.closers {
 		if err := closer.Close(); err != nil {
@@ -85,7 +90,7 @@ func (h *managedHandler) Close() error {
 	return errors.Join(errs...)
 }
 
-func newAuditPublisher(cfg config.Config) (*audit.Publisher, []io.Closer, error) {
+func newAuditPublisher(cfg config.Config, logger *zap.Logger) (audit.Observer, []io.Closer, error) {
 	if cfg.AuditFile == "" && cfg.AuditURL == "" {
 		return nil, nil, nil
 	}
@@ -111,7 +116,8 @@ func newAuditPublisher(cfg config.Config) (*audit.Publisher, []io.Closer, error)
 		observers = append(observers, observer)
 	}
 
-	return audit.NewPublisher(observers...), closers, nil
+	queue := audit.NewQueue(audit.NewPublisher(observers...), logger)
+	return queue, append([]io.Closer{queue}, closers...), nil
 }
 
 func newStore(cfg config.Config, db *sql.DB) (repository.Store, error) {

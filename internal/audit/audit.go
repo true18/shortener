@@ -22,7 +22,8 @@ type Event struct {
 	URL       string `json:"url"`
 }
 
-// Observer receives audit events.
+// Observer receives audit events and reports delivery failures.
+// Implementations should stop cancellable work when ctx is done.
 type Observer interface {
 	Notify(ctx context.Context, event Event) error
 }
