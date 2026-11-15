@@ -534,13 +534,18 @@ func TestAuditFileAndHTTPObservers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server.New returned error: %v", err)
 	}
-	if closer, ok := h.(io.Closer); ok {
-		t.Cleanup(func() {
+	closer, ok := h.(io.Closer)
+	if !ok {
+		t.Fatal("server handler does not close its resources")
+	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
 			if err := closer.Close(); err != nil {
 				t.Errorf("Close server: %v", err)
 			}
-		})
-	}
+		}
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://example.com/long"))
 	rec := httptest.NewRecorder()
@@ -558,6 +563,10 @@ func TestAuditFileAndHTTPObservers(t *testing.T) {
 	if remoteEvent.Action != audit.ActionShorten || remoteEvent.URL != "https://example.com/long" || remoteEvent.UserID == "" {
 		t.Fatalf("remote event = %+v", remoteEvent)
 	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("Close server: %v", err)
+	}
+	closed = true
 
 	data, err := os.ReadFile(auditPath)
 	if err != nil {
