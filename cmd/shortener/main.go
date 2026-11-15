@@ -4,6 +4,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -12,10 +13,28 @@ import (
 	"go.uber.org/zap"
 )
 
+var buildVersion string
+var buildDate string
+var buildCommit string
+
 func main() {
+	printBuildInfo(os.Stdout, buildVersion, buildDate, buildCommit)
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
+}
+
+func printBuildInfo(w io.Writer, version, date, commit string) {
+	fmt.Fprintf(w, "Build version: %s\n", buildValue(version))
+	fmt.Fprintf(w, "Build date: %s\n", buildValue(date))
+	fmt.Fprintf(w, "Build commit: %s\n", buildValue(commit))
+}
+
+func buildValue(value string) string {
+	if value == "" {
+		return "N/A"
+	}
+	return value
 }
 
 func run() error {
