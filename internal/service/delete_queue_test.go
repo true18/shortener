@@ -79,6 +79,21 @@ func TestDeleteQueueCloseFlushesPendingTasks(t *testing.T) {
 	}
 }
 
+func TestDeleteBatchReset(t *testing.T) {
+	batch := deleteBatch{
+		groups: map[string][]string{"user": {"one", "two"}},
+		count:  2,
+	}
+	batch.Reset()
+	if batch.count != 0 {
+		t.Fatalf("count = %d, want 0", batch.count)
+	}
+	if batch.groups == nil || len(batch.groups) != 0 {
+		t.Fatalf("groups = %#v, want an empty non-nil map", batch.groups)
+	}
+	batch.Reset()
+}
+
 func receiveDeleteTask(t *testing.T, calls <-chan DeleteTask) DeleteTask {
 	t.Helper()
 
