@@ -32,6 +32,9 @@ func (o *FileObserver) Notify(_ context.Context, event Event) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	if o.file == nil {
+		return os.ErrClosed
+	}
 	return o.encoder.Encode(event)
 }
 
@@ -40,5 +43,11 @@ func (o *FileObserver) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	return o.file.Close()
+	if o.file == nil {
+		return nil
+	}
+	err := o.file.Close()
+	o.file = nil
+	o.encoder = nil
+	return err
 }

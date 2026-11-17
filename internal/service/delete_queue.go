@@ -43,19 +43,21 @@ type deleteBatch struct {
 
 // DeleteQueue batches user-scoped deletion requests for background processing.
 type DeleteQueue struct {
-	store  DeleteStore
-	tasks  chan DeleteTask
-	done   chan struct{}
-	mu     sync.RWMutex
-	closed bool
+	store      DeleteStore
+	tasks      chan DeleteTask
+	stop       chan struct{}
+	workerDone chan struct{}
+	mu         sync.RWMutex
+	closed     bool
 }
 
 // NewDeleteQueue starts a worker that combines queued deletion tasks into batches.
 func NewDeleteQueue(store DeleteStore) *DeleteQueue {
 	q := &DeleteQueue{
-		store: store,
-		tasks: make(chan DeleteTask, deleteQueueSize),
-		done:  make(chan struct{}),
+		store:      store,
+		tasks:      make(chan DeleteTask, deleteQueueSize),
+		stop:       make(chan struct{}),
+		workerDone: make(chan struct{}),
 	}
 	go q.run()
 
@@ -84,18 +86,21 @@ func (q *DeleteQueue) EnqueueDelete(userID string, ids []string) error {
 	}
 }
 
-// Close stops the worker after it flushes tasks already in the queue.
+// Close stops accepting tasks and waits for the worker to flush queued deletions.
 func (q *DeleteQueue) Close() {
 	q.mu.Lock()
-	defer q.mu.Unlock()
-
 	if !q.closed {
 		q.closed = true
-		close(q.done)
+		close(q.stop)
 	}
+	q.mu.Unlock()
+
+	<-q.workerDone
 }
 
 func (q *DeleteQueue) run() {
+	defer close(q.workerDone)
+
 	ticker := time.NewTicker(deleteFlushInterval)
 	defer ticker.Stop()
 
@@ -123,7 +128,7 @@ func (q *DeleteQueue) run() {
 
 	for {
 		select {
-		case <-q.done:
+		case <-q.stop:
 			drain()
 			flush()
 			return

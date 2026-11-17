@@ -2,10 +2,13 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/true18/shortener/internal/config"
@@ -59,7 +62,15 @@ func run() error {
 		defer db.Close()
 	}
 
-	if err := server.Run(cfg, logger, db); err != nil {
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		syscall.SIGTERM,
+		syscall.SIGINT,
+		syscall.SIGQUIT,
+	)
+	defer stop()
+
+	if err := server.RunContext(ctx, cfg, logger, db); err != nil {
 		return fmt.Errorf("server error: %w", err)
 	}
 	return nil

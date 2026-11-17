@@ -581,6 +581,23 @@ func TestAuditFileAndHTTPObservers(t *testing.T) {
 	}
 }
 
+func TestRunContextLeavesDatabaseOpenForCaller(t *testing.T) {
+	db := openPingDB(t, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := server.RunContext(ctx, config.Config{
+		ServerAddress: "127.0.0.1:0",
+		BaseURL:       testBaseURL,
+	}, zap.NewNop(), db)
+	if err != nil {
+		t.Fatalf("RunContext returned error: %v", err)
+	}
+	if err := db.PingContext(context.Background()); err != nil {
+		t.Fatalf("database was closed by server: %v", err)
+	}
+}
+
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 
