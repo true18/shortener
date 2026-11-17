@@ -157,3 +157,44 @@ TRUSTED_SUBNET=192.168.1.0/24 go run ./cmd/shortener
 ```
 
 Пустая подсеть запрещает доступ всем. Некорректный CIDR считается ошибкой конфигурации. Счётчик `urls` включает soft-deleted ссылки, поскольку отражает общее число созданных сокращений; `users` считает уникальные непустые идентификаторы владельцев ссылок.
+
+## gRPC API
+
+HTTP и gRPC используют одно хранилище и общую бизнес-логику. По умолчанию gRPC слушает `localhost:3200`; адрес можно изменить через `-g`, `GRPC_ADDRESS` или поле JSON `grpc_address`. Явное пустое значение отключает gRPC:
+
+```bash
+go run ./cmd/shortener -a localhost:8080 -g localhost:3200
+GRPC_ADDRESS=localhost:3200 go run ./cmd/shortener
+```
+
+```json
+{
+  "server_address": "localhost:8080",
+  "grpc_address": "localhost:3200"
+}
+```
+
+Контракт находится в `internal/proto/shortener.proto` и предоставляет методы:
+
+- `ShortenURL` — валидирует и сокращает URL; повторный URL идемпотентно возвращает уже существующую короткую ссылку;
+- `ExpandURL` — возвращает оригинальный URL по short ID;
+- `ListUserURLs` — возвращает активные ссылки текущего пользователя.
+
+Все RPC требуют metadata `authorization` с сырым подписанным значением cookie `user_id`, полученным через HTTP API. Префикс `Bearer` не используется:
+
+```text
+authorization: dXNlci0x.<signature>
+```
+
+Некорректные аргументы возвращают `InvalidArgument`, отсутствующая или неверная подпись — `Unauthenticated`, неизвестная либо удалённая ссылка — `NotFound`, ошибки хранилища — `Internal`. Внутренние тексты SQL-ошибок клиенту не передаются.
+
+При включении `-s` gRPC использует тот же созданный в памяти самоподписанный сертификат, что и HTTPS. Клиенту нужно добавить этот сертификат в доверенные корни; отключать проверку TLS не требуется. По сигналу HTTP и gRPC останавливаются одновременно: gRPC сначала выполняет `GracefulStop`, а после общего 30-секундного таймаута использует `Stop` и возвращает ошибку завершения.
+
+Go-файлы protobuf сгенерированы `protoc 36.2`, `protoc-gen-go v1.36.12` и `protoc-gen-go-grpc v1.6.2`. После установки этих версий генерация из корня проекта воспроизводится командой:
+
+```bash
+protoc -I internal/proto -I /path/to/protoc/include \
+  --go_out=internal/proto --go_opt=paths=source_relative \
+  --go-grpc_out=internal/proto --go-grpc_opt=paths=source_relative \
+  internal/proto/shortener.proto
+```

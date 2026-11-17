@@ -72,9 +72,17 @@ func TestRunStopsOnSignals(t *testing.T) {
 			if err := listener.Close(); err != nil {
 				t.Fatalf("close reserved listener: %v", err)
 			}
+			grpcListener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("reserve gRPC address: %v", err)
+			}
+			grpcAddress := grpcListener.Addr().String()
+			if err := grpcListener.Close(); err != nil {
+				t.Fatalf("close reserved gRPC listener: %v", err)
+			}
 
 			cmd := exec.Command(os.Args[0], "-test.run=^TestRunStopsOnSignals$")
-			cmd.Env = signalHelperEnvironment(address)
+			cmd.Env = signalHelperEnvironment(address, grpcAddress)
 			var output lockedBuffer
 			cmd.Stdout = &output
 			cmd.Stderr = &output
@@ -109,7 +117,7 @@ func TestRunStopsOnSignals(t *testing.T) {
 	}
 }
 
-func signalHelperEnvironment(address string) []string {
+func signalHelperEnvironment(address string, grpcAddress string) []string {
 	overrides := map[string]string{
 		"SHORTENER_SIGNAL_HELPER": "1",
 		"SERVER_ADDRESS":          address,
@@ -120,6 +128,8 @@ func signalHelperEnvironment(address string) []string {
 		"AUDIT_FILE":              "",
 		"AUDIT_URL":               "",
 		"CONFIG":                  "",
+		"TRUSTED_SUBNET":          "",
+		"GRPC_ADDRESS":            grpcAddress,
 	}
 
 	environment := make([]string, 0, len(os.Environ())+len(overrides))

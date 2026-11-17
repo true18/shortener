@@ -33,6 +33,8 @@ const (
 	DefaultConfigPath = ""
 	// DefaultTrustedSubnet denies access to internal statistics by default.
 	DefaultTrustedSubnet = ""
+	// DefaultGRPCAddress is the default gRPC listen address.
+	DefaultGRPCAddress = "localhost:3200"
 	// EnvServerAddress names the environment variable for the HTTP listen address.
 	EnvServerAddress = "SERVER_ADDRESS"
 	// EnvBaseURL names the environment variable for the public short-link base URL.
@@ -51,6 +53,8 @@ const (
 	EnvConfig = "CONFIG"
 	// EnvTrustedSubnet names the environment variable containing the trusted CIDR range.
 	EnvTrustedSubnet = "TRUSTED_SUBNET"
+	// EnvGRPCAddress names the environment variable for the gRPC listen address.
+	EnvGRPCAddress = "GRPC_ADDRESS"
 )
 
 // Config contains the server's runtime settings.
@@ -73,6 +77,8 @@ type Config struct {
 	EnableHTTPS bool
 	// TrustedSubnet restricts internal statistics to X-Real-IP addresses in this CIDR range.
 	TrustedSubnet string
+	// GRPCAddress is the address on which the gRPC server listens; an empty value disables it.
+	GRPCAddress string
 }
 
 // Parse combines defaults, JSON, explicitly set flags, and environment variables in increasing priority.
@@ -86,6 +92,7 @@ func Parse(args []string) (Config, error) {
 		AuditURL:        DefaultAuditURL,
 		EnableHTTPS:     DefaultEnableHTTPS,
 		TrustedSubnet:   DefaultTrustedSubnet,
+		GRPCAddress:     DefaultGRPCAddress,
 	}
 	flagValues := cfg
 	configPath := DefaultConfigPath
@@ -99,6 +106,7 @@ func Parse(args []string) (Config, error) {
 	flags.StringVar(&flagValues.AuditURL, "audit-url", flagValues.AuditURL, "audit server URL")
 	flags.BoolVar(&flagValues.EnableHTTPS, "s", flagValues.EnableHTTPS, "enable HTTPS")
 	flags.StringVar(&flagValues.TrustedSubnet, "t", flagValues.TrustedSubnet, "trusted subnet in CIDR notation")
+	flags.StringVar(&flagValues.GRPCAddress, "g", flagValues.GRPCAddress, "gRPC server address")
 	flags.StringVar(&configPath, "c", configPath, "JSON configuration file")
 	flags.StringVar(&configPath, "config", configPath, "JSON configuration file")
 
@@ -146,6 +154,7 @@ type fileConfig struct {
 	AuditFile       *string `json:"audit_file"`
 	AuditURL        *string `json:"audit_url"`
 	TrustedSubnet   *string `json:"trusted_subnet"`
+	GRPCAddress     *string `json:"grpc_address"`
 }
 
 func loadFile(path string) (fileConfig, error) {
@@ -196,6 +205,9 @@ func applyFile(cfg *Config, values fileConfig) {
 	if values.TrustedSubnet != nil {
 		cfg.TrustedSubnet = *values.TrustedSubnet
 	}
+	if values.GRPCAddress != nil {
+		cfg.GRPCAddress = *values.GRPCAddress
+	}
 }
 
 func applyFlags(cfg *Config, values Config, set map[string]bool) {
@@ -223,6 +235,9 @@ func applyFlags(cfg *Config, values Config, set map[string]bool) {
 	}
 	if set["t"] {
 		cfg.TrustedSubnet = values.TrustedSubnet
+	}
+	if set["g"] {
+		cfg.GRPCAddress = values.GRPCAddress
 	}
 }
 
@@ -255,6 +270,9 @@ func applyEnv(cfg *Config) error {
 	}
 	if value, ok := os.LookupEnv(EnvTrustedSubnet); ok {
 		cfg.TrustedSubnet = value
+	}
+	if value, ok := os.LookupEnv(EnvGRPCAddress); ok {
+		cfg.GRPCAddress = value
 	}
 	return nil
 }
