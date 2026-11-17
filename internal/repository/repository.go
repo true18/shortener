@@ -24,6 +24,17 @@ type Store interface {
 	FindByUserID(userID string) ([]UserURL, error)
 	// DeleteUserURLs marks the listed URLs as deleted when they belong to userID.
 	DeleteUserURLs(ids []string, userID string) error
+	// Stats returns total shortened URLs and distinct registered users.
+	// Soft-deleted URLs remain included in the total.
+	Stats() (Stats, error)
+}
+
+// Stats contains aggregate storage counters.
+type Stats struct {
+	// URLs is the number of all stored short URLs, including soft-deleted ones.
+	URLs int64 `json:"urls"`
+	// Users is the number of distinct non-empty user identifiers that own URLs.
+	Users int64 `json:"users"`
 }
 
 // BatchItem is one original URL and its caller-provided correlation ID.

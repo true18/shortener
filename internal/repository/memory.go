@@ -185,6 +185,24 @@ func (m *Memory) DeleteUserURLs(ids []string, userID string) error {
 	return nil
 }
 
+// Stats returns aggregate counters without copying stored records.
+func (m *Memory) Stats() (Stats, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	users := make(map[string]struct{})
+	for _, record := range m.records {
+		if record.UserID != "" {
+			users[record.UserID] = struct{}{}
+		}
+	}
+
+	return Stats{
+		URLs:  int64(len(m.records)),
+		Users: int64(len(users)),
+	}, nil
+}
+
 type fileRecord struct {
 	UUID        string `json:"uuid"`
 	ShortURL    string `json:"short_url"`

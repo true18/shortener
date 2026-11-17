@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,6 +29,7 @@ type Handler struct {
 	deletes DeleteEnqueuer
 	auditor audit.Observer
 	logger  *zap.Logger
+	trusted *net.IPNet
 	router  chi.Router
 }
 
@@ -57,6 +59,19 @@ func NewWithAudit(
 	auditor audit.Observer,
 	logger *zap.Logger,
 ) *Handler {
+	return NewWithAuditAndTrustedSubnet(repo, baseURL, pinger, deletes, auditor, logger, nil)
+}
+
+// NewWithAuditAndTrustedSubnet creates a handler with audit delivery and protected internal statistics.
+func NewWithAuditAndTrustedSubnet(
+	repo repository.Store,
+	baseURL string,
+	pinger Pinger,
+	deletes DeleteEnqueuer,
+	auditor audit.Observer,
+	logger *zap.Logger,
+	trustedSubnet *net.IPNet,
+) *Handler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -68,6 +83,7 @@ func NewWithAudit(
 		deletes: deletes,
 		auditor: auditor,
 		logger:  logger,
+		trusted: trustedSubnet,
 	}
 
 	r := chi.NewRouter()
@@ -83,11 +99,38 @@ func NewWithAudit(
 	r.Get("/api/user/urls", h.userURLs)
 	r.Delete("/api/user/urls", h.deleteUserURLs)
 	r.Get("/ping", h.ping)
+	r.Get("/api/internal/stats", h.stats)
 	r.Get("/{id}", h.redirect)
 
 	h.router = r
 
 	return h
+}
+
+func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
+	if !isTrustedIP(h.trusted, r.Header.Get("X-Real-IP")) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	stats, err := h.repo.Stats()
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(stats)
+}
+
+func isTrustedIP(network *net.IPNet, value string) bool {
+	if network == nil {
+		return false
+	}
+
+	ip := net.ParseIP(strings.TrimSpace(value))
+	return ip != nil && network.Contains(ip)
 }
 
 // ServeHTTP dispatches a request to the matching URL API endpoint.

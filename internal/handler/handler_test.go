@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,12 +26,14 @@ const testBaseURL = "http://localhost:8080"
 const testUserID = "user-1"
 
 type fakeRepo struct {
-	idByURL  map[string]string
-	urlByID  map[string]string
-	userByID map[string]string
-	deleted  map[string]bool
-	order    []string
-	next     int
+	idByURL    map[string]string
+	urlByID    map[string]string
+	userByID   map[string]string
+	deleted    map[string]bool
+	order      []string
+	next       int
+	statsCalls int
+	statsErr   error
 }
 
 func newFakeRepo() *fakeRepo {
@@ -115,6 +118,21 @@ func (f *fakeRepo) DeleteUserURLs(ids []string, userID string) error {
 	return nil
 }
 
+func (f *fakeRepo) Stats() (repository.Stats, error) {
+	f.statsCalls++
+	if f.statsErr != nil {
+		return repository.Stats{}, f.statsErr
+	}
+
+	users := make(map[string]struct{})
+	for _, userID := range f.userByID {
+		if userID != "" {
+			users[userID] = struct{}{}
+		}
+	}
+	return repository.Stats{URLs: int64(len(f.urlByID)), Users: int64(len(users))}, nil
+}
+
 func (f *fakeRepo) nextID() string {
 	if f.next == 0 {
 		f.next++
@@ -152,6 +170,120 @@ func newHandlerWithAudit(repo repository.Store, observer audit.Observer) http.Ha
 		observer,
 		zap.NewNop(),
 	)
+}
+
+func newHandlerWithTrustedSubnet(repo repository.Store, cidr string) http.Handler {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		panic(err)
+	}
+
+	return handler.NewWithAuditAndTrustedSubnet(
+		repo,
+		testBaseURL,
+		nil,
+		immediateDeleteQueue{repo: repo},
+		nil,
+		zap.NewNop(),
+		network,
+	)
+}
+
+func TestInternalStatsAccess(t *testing.T) {
+	tests := []struct {
+		name       string
+		cidr       string
+		realIP     string
+		wantStatus int
+	}{
+		{name: "IPv4 inside", cidr: "192.168.1.0/24", realIP: "192.168.1.42", wantStatus: http.StatusOK},
+		{name: "IPv4 outside", cidr: "192.168.1.0/24", realIP: "192.168.2.42", wantStatus: http.StatusForbidden},
+		{name: "IPv6 inside", cidr: "2001:db8::/32", realIP: "2001:db8::1", wantStatus: http.StatusOK},
+		{name: "IPv6 outside", cidr: "2001:db8::/32", realIP: "2001:db9::1", wantStatus: http.StatusForbidden},
+		{name: "missing header", cidr: "192.168.1.0/24", wantStatus: http.StatusForbidden},
+		{name: "empty header", cidr: "192.168.1.0/24", realIP: " ", wantStatus: http.StatusForbidden},
+		{name: "invalid IP", cidr: "192.168.1.0/24", realIP: "not-an-ip", wantStatus: http.StatusForbidden},
+		{name: "mapped IPv4", cidr: "192.168.1.0/24", realIP: "::ffff:192.168.1.42", wantStatus: http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			_, _ = repo.Save("https://example.com/one", "user-1")
+			_, _ = repo.Save("https://example.com/two", "user-2")
+			h := newHandlerWithTrustedSubnet(repo, tt.cidr)
+			req := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
+			if tt.realIP != "" {
+				req.Header.Set("X-Real-IP", tt.realIP)
+			}
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			wantCalls := 0
+			if tt.wantStatus == http.StatusOK {
+				wantCalls = 1
+				if got := rec.Header().Get("Content-Type"); got != "application/json" {
+					t.Fatalf("Content-Type = %q", got)
+				}
+				var got repository.Stats
+				if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+					t.Fatalf("Decode: %v", err)
+				}
+				if got.URLs != 2 || got.Users != 2 {
+					t.Fatalf("stats = %+v", got)
+				}
+			}
+			if repo.statsCalls != wantCalls {
+				t.Fatalf("Stats calls = %d, want %d", repo.statsCalls, wantCalls)
+			}
+		})
+	}
+}
+
+func TestInternalStatsStorageError(t *testing.T) {
+	_, network, err := net.ParseCIDR("127.0.0.0/8")
+	if err != nil {
+		t.Fatalf("ParseCIDR: %v", err)
+	}
+	h := handler.NewWithAuditAndTrustedSubnet(
+		errorRepo{err: errors.New("storage failed")},
+		testBaseURL,
+		nil,
+		nil,
+		nil,
+		zap.NewNop(),
+		network,
+	)
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
+	req.Header.Set("X-Real-IP", "127.0.0.1")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestInternalStatsDisabledWithoutTrustedSubnet(t *testing.T) {
+	repo := newFakeRepo()
+	h := newHandler(repo)
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
+	req.Header.Set("X-Real-IP", "127.0.0.1")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if repo.statsCalls != 0 {
+		t.Fatalf("Stats calls = %d, want 0", repo.statsCalls)
+	}
 }
 
 type immediateDeleteQueue struct {
@@ -1357,6 +1489,10 @@ func (r errorRepo) FindByUserID(string) ([]repository.UserURL, error) {
 
 func (r errorRepo) DeleteUserURLs([]string, string) error {
 	return r.err
+}
+
+func (r errorRepo) Stats() (repository.Stats, error) {
+	return repository.Stats{}, r.err
 }
 
 func withUser(req *http.Request) *http.Request {

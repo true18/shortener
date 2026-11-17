@@ -16,7 +16,8 @@ func TestParseConfigFileAllValues(t *testing.T) {
 		"database_dsn":"postgres://config",
 		"enable_https":true,
 		"audit_file":"/tmp/audit.jsonl",
-		"audit_url":"https://audit.example/events"
+		"audit_url":"https://audit.example/events",
+		"trusted_subnet":"192.168.1.0/24"
 	}`)
 
 	cfg, err := Parse([]string{"-c", path})
@@ -35,6 +36,9 @@ func TestParseConfigFileAllValues(t *testing.T) {
 	}
 	if cfg.AuditFile != "/tmp/audit.jsonl" || cfg.AuditURL != "https://audit.example/events" {
 		t.Fatalf("audit = %q, %q", cfg.AuditFile, cfg.AuditURL)
+	}
+	if cfg.TrustedSubnet != "192.168.1.0/24" {
+		t.Fatalf("TrustedSubnet = %q", cfg.TrustedSubnet)
 	}
 }
 
@@ -74,7 +78,8 @@ func TestParseExplicitFlagsOverrideConfig(t *testing.T) {
 		"server_address":"json:8080",
 		"database_dsn":"postgres://json",
 		"enable_https":true,
-		"audit_file":"json-audit"
+		"audit_file":"json-audit",
+		"trusted_subnet":"192.168.0.0/16"
 	}`)
 
 	cfg, err := Parse([]string{
@@ -83,6 +88,7 @@ func TestParseExplicitFlagsOverrideConfig(t *testing.T) {
 		"-d", "",
 		"-s=false",
 		"--audit-file", "",
+		"-t", "",
 	})
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
@@ -96,6 +102,9 @@ func TestParseExplicitFlagsOverrideConfig(t *testing.T) {
 	if cfg.AuditFile != "" {
 		t.Fatalf("AuditFile = %q, want explicit empty value", cfg.AuditFile)
 	}
+	if cfg.TrustedSubnet != "" {
+		t.Fatalf("TrustedSubnet = %q, want explicit empty value", cfg.TrustedSubnet)
+	}
 }
 
 func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
@@ -107,7 +116,8 @@ func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
 		"database_dsn":"postgres://json",
 		"enable_https":true,
 		"audit_file":"json-audit",
-		"audit_url":"https://json.example/events"
+		"audit_url":"https://json.example/events",
+		"trusted_subnet":"192.168.0.0/16"
 	}`)
 	t.Setenv(EnvServerAddress, "env:8080")
 	t.Setenv(EnvBaseURL, "http://env")
@@ -116,6 +126,7 @@ func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
 	t.Setenv(EnvEnableHTTPS, "false")
 	t.Setenv(EnvAuditFile, "env-audit")
 	t.Setenv(EnvAuditURL, "https://env.example/events")
+	t.Setenv(EnvTrustedSubnet, "10.0.0.0/8")
 
 	cfg, err := Parse([]string{
 		"-c", path,
@@ -126,6 +137,7 @@ func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
 		"-s=true",
 		"--audit-file", "flag-audit",
 		"--audit-url", "https://flag.example/events",
+		"-t", "172.16.0.0/12",
 	})
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
@@ -142,6 +154,9 @@ func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
 	}
 	if cfg.AuditFile != "env-audit" || cfg.AuditURL != "https://env.example/events" {
 		t.Fatalf("audit = %q, %q", cfg.AuditFile, cfg.AuditURL)
+	}
+	if cfg.TrustedSubnet != "10.0.0.0/8" {
+		t.Fatalf("TrustedSubnet = %q", cfg.TrustedSubnet)
 	}
 }
 
@@ -203,6 +218,7 @@ func TestParseConfigErrors(t *testing.T) {
 		{name: "missing file", path: func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing.json") }},
 		{name: "unreadable path", path: func(t *testing.T) string { return t.TempDir() }},
 		{name: "invalid audit URL", path: func(t *testing.T) string { return writeConfig(t, `{"audit_url":"ftp://example.com"}`) }},
+		{name: "invalid trusted subnet", path: func(t *testing.T) string { return writeConfig(t, `{"trusted_subnet":"not-a-cidr"}`) }},
 	}
 
 	for _, tt := range tests {
@@ -247,6 +263,7 @@ func clearRuntimeEnv(t *testing.T) {
 		EnvAuditFile,
 		EnvAuditURL,
 		EnvConfig,
+		EnvTrustedSubnet,
 	} {
 		unsetEnv(t, key)
 	}
