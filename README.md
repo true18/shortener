@@ -104,3 +104,29 @@ ENABLE_HTTPS=true go run ./cmd/shortener -a localhost:8443
 При запуске сервер создаёт в памяти самоподписанный ECDSA-сертификат для `localhost`, `127.0.0.1` и host из адреса сервера. Сертификат предназначен для локальной разработки: браузер и `curl` по умолчанию не доверяют ему. Для ручной локальной проверки можно использовать `curl -k https://localhost:8443/ping`; в production следует использовать сертификат доверенного центра и внешний TLS termination.
 
 `BASE_URL` настраивается независимо. Чтобы сервис возвращал короткие HTTPS-ссылки, его нужно явно задать с `https://`, например `BASE_URL=https://localhost:8443`.
+
+## Конфигурация из JSON
+
+Путь к JSON-файлу задаётся через `-c`, `-config` или переменную окружения `CONFIG`:
+
+```bash
+go run ./cmd/shortener -c config.json
+go run ./cmd/shortener -config config.json
+CONFIG=config.json go run ./cmd/shortener
+```
+
+Поддерживается полный набор runtime-настроек:
+
+```json
+{
+  "server_address": "localhost:8443",
+  "base_url": "https://localhost:8443",
+  "file_storage_path": "/tmp/shortener.json",
+  "database_dsn": "",
+  "enable_https": true,
+  "audit_file": "/tmp/shortener-audit.jsonl",
+  "audit_url": ""
+}
+```
+
+Приоритет источников: переменные окружения, явно переданные CLI-флаги, JSON-файл, значения по умолчанию. Поэтому `-s=false` может выключить HTTPS, включённый в JSON, а `ENABLE_HTTPS=true` снова перекроет флаг. `ENABLE_HTTPS` принимает стандартные boolean-значения Go: `true`, `false`, `1` и `0`. Неизвестные поля, некорректный JSON и указанный, но недоступный файл считаются ошибкой запуска. Если путь к файлу не задан, сервис работает с флагами, окружением и прежними значениями по умолчанию.
