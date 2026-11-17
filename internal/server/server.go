@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 
 	"github.com/true18/shortener/internal/audit"
@@ -55,7 +56,7 @@ func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error
 	return &managedHandler{Handler: wrapped, deletes: deletes, closers: closers}, nil
 }
 
-// Run serves HTTP requests at cfg.ServerAddress and closes server-owned resources on exit.
+// Run serves HTTP or HTTPS requests at cfg.ServerAddress and closes server-owned resources on exit.
 func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {
 	h, err := New(cfg, logger, db)
 	if err != nil {
@@ -69,7 +70,22 @@ func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {
 		}()
 	}
 
-	return http.ListenAndServe(cfg.ServerAddress, h)
+	server, err := newHTTPServer(cfg, h)
+	if err != nil {
+		return err
+	}
+
+	listener, err := net.Listen("tcp", cfg.ServerAddress)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	if cfg.EnableHTTPS {
+		return server.ServeTLS(listener, "", "")
+	}
+
+	return server.Serve(listener)
 }
 
 type managedHandler struct {

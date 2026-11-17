@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 )
 
 const (
@@ -21,6 +22,8 @@ const (
 	DefaultAuditFile = ""
 	// DefaultAuditURL disables remote audit output by default.
 	DefaultAuditURL = ""
+	// DefaultEnableHTTPS keeps the server on HTTP unless TLS is explicitly enabled.
+	DefaultEnableHTTPS = false
 	// EnvServerAddress names the environment variable for the HTTP listen address.
 	EnvServerAddress = "SERVER_ADDRESS"
 	// EnvBaseURL names the environment variable for the public short-link base URL.
@@ -33,6 +36,8 @@ const (
 	EnvAuditFile = "AUDIT_FILE"
 	// EnvAuditURL names the environment variable for the remote audit endpoint.
 	EnvAuditURL = "AUDIT_URL"
+	// EnvEnableHTTPS names the environment variable that enables HTTPS.
+	EnvEnableHTTPS = "ENABLE_HTTPS"
 )
 
 // Config contains the server's runtime settings.
@@ -51,6 +56,8 @@ type Config struct {
 	AuditFile string
 	// AuditURL is an optional HTTP endpoint for audit events.
 	AuditURL string
+	// EnableHTTPS enables TLS with a generated self-signed certificate.
+	EnableHTTPS bool
 }
 
 // Parse combines defaults, command-line flags, and environment variables, with environment variables taking precedence.
@@ -62,6 +69,7 @@ func Parse(args []string) (Config, error) {
 		DatabaseDSN:     DefaultDatabaseDSN,
 		AuditFile:       DefaultAuditFile,
 		AuditURL:        DefaultAuditURL,
+		EnableHTTPS:     DefaultEnableHTTPS,
 	}
 
 	flags := flag.NewFlagSet("shortener", flag.ContinueOnError)
@@ -71,6 +79,7 @@ func Parse(args []string) (Config, error) {
 	flags.StringVar(&cfg.DatabaseDSN, "d", cfg.DatabaseDSN, "database DSN")
 	flags.StringVar(&cfg.AuditFile, "audit-file", cfg.AuditFile, "audit log file")
 	flags.StringVar(&cfg.AuditURL, "audit-url", cfg.AuditURL, "audit server URL")
+	flags.BoolVar(&cfg.EnableHTTPS, "s", cfg.EnableHTTPS, "enable HTTPS")
 
 	if err := flags.Parse(args); err != nil {
 		return Config{}, err
@@ -100,6 +109,13 @@ func Parse(args []string) (Config, error) {
 	}
 	if value, ok := os.LookupEnv(EnvAuditURL); ok {
 		cfg.AuditURL = value
+	}
+	if value, ok := os.LookupEnv(EnvEnableHTTPS); ok {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse %s: %w", EnvEnableHTTPS, err)
+		}
+		cfg.EnableHTTPS = enabled
 	}
 
 	if err := validateAuditURL(cfg.AuditURL); err != nil {
