@@ -53,6 +53,36 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	store := NewPostgres(db)
+	beforeStats, err := store.Stats()
+	if err != nil {
+		t.Fatalf("Stats returned error: %v", err)
+	}
+	statsSuffix := time.Now().UnixNano()
+	statsFirstID, err := store.Save(fmt.Sprintf("https://stats-one.example.com/%d", statsSuffix), fmt.Sprintf("stats-user-one-%d", statsSuffix))
+	if err != nil {
+		t.Fatalf("Save stats URL returned error: %v", err)
+	}
+	if _, err := store.Save(fmt.Sprintf("https://stats-two.example.com/%d", statsSuffix), fmt.Sprintf("stats-user-two-%d", statsSuffix)); err != nil {
+		t.Fatalf("Save stats URL returned error: %v", err)
+	}
+	afterStats, err := store.Stats()
+	if err != nil {
+		t.Fatalf("Stats returned error: %v", err)
+	}
+	if afterStats.URLs != beforeStats.URLs+2 || afterStats.Users != beforeStats.Users+2 {
+		t.Fatalf("stats before = %+v, after = %+v", beforeStats, afterStats)
+	}
+	if err := store.DeleteUserURLs([]string{statsFirstID}, fmt.Sprintf("stats-user-one-%d", statsSuffix)); err != nil {
+		t.Fatalf("DeleteUserURLs stats URL returned error: %v", err)
+	}
+	deletedStats, err := store.Stats()
+	if err != nil {
+		t.Fatalf("Stats returned error: %v", err)
+	}
+	if deletedStats != afterStats {
+		t.Fatalf("stats after delete = %+v, want %+v", deletedStats, afterStats)
+	}
+
 	originalURL := fmt.Sprintf("https://example.com/%d", time.Now().UnixNano())
 
 	id, err := store.Save(originalURL, testUserID)

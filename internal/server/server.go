@@ -56,10 +56,31 @@ func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error
 	}
 
 	deletes := service.NewDeleteQueue(store)
-	h := handler.NewWithAudit(store, cfg.BaseURL, pinger, deletes, auditor, logger)
+	trustedSubnet, err := parseTrustedSubnet(cfg.TrustedSubnet)
+	if err != nil {
+		deletes.Close()
+		for _, closer := range closers {
+			_ = closer.Close()
+		}
+		return nil, err
+	}
+	h := handler.NewWithAuditAndTrustedSubnet(store, cfg.BaseURL, pinger, deletes, auditor, logger, trustedSubnet)
 	wrapped := middleware.RequestLogger(logger)(auth.Middleware(middleware.Gzip(h)))
 
 	return &managedHandler{Handler: wrapped, deletes: deletes, closers: closers}, nil
+}
+
+func parseTrustedSubnet(value string) (*net.IPNet, error) {
+	if value == "" {
+		return nil, nil
+	}
+
+	_, network, err := net.ParseCIDR(value)
+	if err != nil {
+		return nil, fmt.Errorf("parse trusted subnet: %w", err)
+	}
+
+	return network, nil
 }
 
 // Run serves requests until the server stops and closes server-owned resources on exit.
