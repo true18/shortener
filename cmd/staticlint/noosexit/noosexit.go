@@ -31,12 +31,6 @@ func run(pass *analysis.Pass) (any, error) {
 			}
 
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
-				if node != fn.Body {
-					if _, ok := node.(*ast.FuncLit); ok {
-						return false
-					}
-				}
-
 				call, ok := node.(*ast.CallExpr)
 				if !ok {
 					return true

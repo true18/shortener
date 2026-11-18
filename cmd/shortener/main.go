@@ -13,9 +13,20 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	finish(run())
+}
+
+func finish(err error) {
+	if err == nil {
+		return
 	}
+
+	fmt.Fprintln(os.Stderr, err)
+	exit(1)
+}
+
+func exit(code int) {
+	os.Exit(code)
 }
 
 func run() error {
