@@ -15,5 +15,7 @@ func TestAnalyzer(t *testing.T) {
 		"otherpkg",
 		"customexitpkg",
 		"closurepkg",
+		"nestedpkg",
+		"otherexitpkg",
 	)
 }
