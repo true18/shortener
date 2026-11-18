@@ -19,9 +19,20 @@ var buildCommit string
 
 func main() {
 	printBuildInfo(os.Stdout, buildVersion, buildDate, buildCommit)
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	finish(run())
+}
+
+func finish(err error) {
+	if err == nil {
+		return
 	}
+
+	fmt.Fprintln(os.Stderr, err)
+	exit(1)
+}
+
+func exit(code int) {
+	os.Exit(code)
 }
 
 func printBuildInfo(w io.Writer, version, date, commit string) {
