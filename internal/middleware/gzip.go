@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -133,7 +134,99 @@ func (w *gzipResponseWriter) sendHeader() {
 }
 
 func acceptsGzip(value string) bool {
-	return strings.Contains(strings.ToLower(value), "gzip")
+	gzipSeen := false
+	gzipQuality := -1.0
+	wildcardQuality := -1.0
+
+	for _, item := range strings.Split(value, ",") {
+		coding, quality, valid := parseEncoding(strings.TrimSpace(item))
+		switch {
+		case strings.EqualFold(coding, "gzip"):
+			gzipSeen = true
+			if valid && quality > gzipQuality {
+				gzipQuality = quality
+			}
+		case coding == "*":
+			if valid && quality > wildcardQuality {
+				wildcardQuality = quality
+			}
+		}
+	}
+
+	if gzipSeen {
+		return gzipQuality > 0
+	}
+	return wildcardQuality > 0
+}
+
+func parseEncoding(value string) (string, float64, bool) {
+	parts := strings.Split(value, ";")
+	coding := strings.TrimSpace(parts[0])
+	if !validToken(coding) {
+		return coding, 0, false
+	}
+
+	quality := 1.0
+	qualitySet := false
+	for _, parameter := range parts[1:] {
+		name, rawValue, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "q") || qualitySet {
+			return coding, 0, false
+		}
+
+		var valid bool
+		quality, valid = parseQuality(strings.TrimSpace(rawValue))
+		if !valid {
+			return coding, 0, false
+		}
+		qualitySet = true
+	}
+
+	return coding, quality, true
+}
+
+func parseQuality(value string) (float64, bool) {
+	if value == "0" || value == "1" {
+		quality, _ := strconv.ParseFloat(value, 64)
+		return quality, true
+	}
+
+	whole, fraction, ok := strings.Cut(value, ".")
+	if !ok || len(fraction) > 3 {
+		return 0, false
+	}
+	if whole != "0" && whole != "1" {
+		return 0, false
+	}
+	if whole == "1" && strings.Trim(fraction, "0") != "" {
+		return 0, false
+	}
+	for _, digit := range fraction {
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+	}
+
+	quality, err := strconv.ParseFloat(value, 64)
+	return quality, err == nil
+}
+
+func validToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
+			continue
+		}
+		switch char {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func canGzip(contentType string) bool {
