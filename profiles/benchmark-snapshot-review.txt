@@ -1,0 +1,61 @@
+Review benchmark before snapshot-copy optimization
+Go: go version go1.26.1 darwin/arm64
+Command: GOCACHE=/private/tmp/shortener-gocache go test ./internal/repository -run '^$' -bench '^BenchmarkMemory(SaveBatchNoChange|DeleteUserURLsNoChange)$' -benchmem -count=3
+
+goos: darwin
+goarch: arm64
+pkg: github.com/true18/shortener/internal/repository
+cpu: Apple M1 Max
+BenchmarkMemorySaveBatchNoChange-10         	   12915	     91575 ns/op	  304256 B/op	       2 allocs/op
+BenchmarkMemorySaveBatchNoChange-10         	   10000	    105717 ns/op	  304256 B/op	       2 allocs/op
+BenchmarkMemorySaveBatchNoChange-10         	   12736	     84397 ns/op	  304256 B/op	       2 allocs/op
+BenchmarkMemoryDeleteUserURLsNoChange-10    	    5324	    207673 ns/op	  578882 B/op	      19 allocs/op
+BenchmarkMemoryDeleteUserURLsNoChange-10    	    5652	    220315 ns/op	  578882 B/op	      19 allocs/op
+BenchmarkMemoryDeleteUserURLsNoChange-10    	    5511	    201961 ns/op	  578884 B/op	      19 allocs/op
+PASS
+ok  	github.com/true18/shortener/internal/repository	9.468s
+
+Review benchmark after snapshot-copy optimization
+Go: go version go1.26.1 darwin/arm64
+Command: GOCACHE=/private/tmp/shortener-gocache go test ./internal/repository -run '^$' -bench '^BenchmarkMemory(SaveBatchNoChange|DeleteUserURLsNoChange)$' -benchmem -count=3
+
+goos: darwin
+goarch: arm64
+pkg: github.com/true18/shortener/internal/repository
+cpu: Apple M1 Max
+BenchmarkMemorySaveBatchNoChange-10         	 1667712	       751.7 ns/op	    1152 B/op	       1 allocs/op
+BenchmarkMemorySaveBatchNoChange-10         	 1747572	       711.9 ns/op	    1152 B/op	       1 allocs/op
+BenchmarkMemorySaveBatchNoChange-10         	 1704882	       708.9 ns/op	    1152 B/op	       1 allocs/op
+BenchmarkMemoryDeleteUserURLsNoChange-10    	    9459	    111682 ns/op	  283968 B/op	      18 allocs/op
+BenchmarkMemoryDeleteUserURLsNoChange-10    	   10000	    115127 ns/op	  283968 B/op	      18 allocs/op
+BenchmarkMemoryDeleteUserURLsNoChange-10    	    9933	    115459 ns/op	  283968 B/op	      18 allocs/op
+PASS
+ok  	github.com/true18/shortener/internal/repository	9.656s
+
+BenchmarkCreateBatch before snapshot-copy optimization
+Go: go version go1.26.1 darwin/arm64
+Command: GOCACHE=/private/tmp/shortener-gocache go test ./internal/handler -run '^$' -bench '^BenchmarkCreateBatch$' -benchmem -count=3
+
+goos: darwin
+goarch: arm64
+pkg: github.com/true18/shortener/internal/handler
+cpu: Apple M1 Max
+BenchmarkCreateBatch-10    	   28154	     42622 ns/op	   31807 B/op	     164 allocs/op
+BenchmarkCreateBatch-10    	   28279	     42787 ns/op	   31806 B/op	     164 allocs/op
+BenchmarkCreateBatch-10    	   28218	     42522 ns/op	   31801 B/op	     164 allocs/op
+PASS
+ok  	github.com/true18/shortener/internal/handler	5.237s
+
+BenchmarkCreateBatch after snapshot-copy optimization
+Go: go version go1.26.1 darwin/arm64
+Command: GOCACHE=/private/tmp/shortener-gocache go test ./internal/handler -run '^$' -bench '^BenchmarkCreateBatch$' -benchmem -count=3
+
+goos: darwin
+goarch: arm64
+pkg: github.com/true18/shortener/internal/handler
+cpu: Apple M1 Max
+BenchmarkCreateBatch-10    	   28333	     41925 ns/op	   29106 B/op	     163 allocs/op
+BenchmarkCreateBatch-10    	   28881	     42262 ns/op	   29105 B/op	     163 allocs/op
+BenchmarkCreateBatch-10    	   27826	     42559 ns/op	   29103 B/op	     163 allocs/op
+PASS
+ok  	github.com/true18/shortener/internal/handler	5.242s
