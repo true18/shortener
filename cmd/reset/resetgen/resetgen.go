@@ -54,7 +54,7 @@ func Generate(root string) error {
 
 func generatePackage(pkg *packages.Package) error {
 	var marked []markedStruct
-	generatedMethods, err := readGeneratedMethods(pkg.Dir, pkg.Fset)
+	generatedMethods, err := readGeneratedMethods(pkg.Dir)
 	if err != nil {
 		return err
 	}
@@ -147,10 +147,10 @@ func generatePackage(pkg *packages.Package) error {
 	return nil
 }
 
-func readGeneratedMethods(dir string, fset *token.FileSet) (map[string]bool, error) {
+func readGeneratedMethods(dir string) (map[string]bool, error) {
 	generated := make(map[string]bool)
 	path := filepath.Join(dir, outputName)
-	file, err := parser.ParseFile(fset, path, nil, 0)
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 	if os.IsNotExist(err) {
 		return generated, nil
 	}
