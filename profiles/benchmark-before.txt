@@ -1,0 +1,47 @@
+Baseline commit: 4826d47
+Go: go version go1.26.1 darwin/arm64
+Command: env GOCACHE=/private/tmp/shortener-gocache go test ./internal/handler ./internal/repository -run '^$' -bench . -benchmem -count=3
+
+goos: darwin
+goarch: arm64
+pkg: github.com/true18/shortener/internal/handler
+cpu: Apple M1 Max
+BenchmarkCreate-10         	   10000	    117815 ns/op	  373298 B/op	      60 allocs/op
+BenchmarkCreate-10         	   10000	    114765 ns/op	  373303 B/op	      60 allocs/op
+BenchmarkCreate-10         	   10000	    115393 ns/op	  373324 B/op	      60 allocs/op
+BenchmarkCreateJSON-10     	   10000	    118289 ns/op	  374083 B/op	      69 allocs/op
+BenchmarkCreateJSON-10     	   10000	    125457 ns/op	  373980 B/op	      69 allocs/op
+BenchmarkCreateJSON-10     	   10000	    122454 ns/op	  373959 B/op	      68 allocs/op
+BenchmarkCreateBatch-10    	   22971	     55154 ns/op	   31807 B/op	     164 allocs/op
+BenchmarkCreateBatch-10    	   22784	     52315 ns/op	   31803 B/op	     164 allocs/op
+BenchmarkCreateBatch-10    	   22875	     52135 ns/op	   31809 B/op	     164 allocs/op
+BenchmarkRedirect-10       	 1349322	       874.0 ns/op	    1648 B/op	      12 allocs/op
+BenchmarkRedirect-10       	 1364096	       884.3 ns/op	    1648 B/op	      12 allocs/op
+BenchmarkRedirect-10       	 1369258	       869.5 ns/op	    1648 B/op	      12 allocs/op
+BenchmarkGzipJSON-10       	   12444	     97468 ns/op	  821709 B/op	      43 allocs/op
+BenchmarkGzipJSON-10       	   12938	     92729 ns/op	  821711 B/op	      43 allocs/op
+BenchmarkGzipJSON-10       	   12296	     99895 ns/op	  821731 B/op	      43 allocs/op
+PASS
+ok  	github.com/true18/shortener/internal/handler	25.699s
+goos: darwin
+goarch: arm64
+pkg: github.com/true18/shortener/internal/repository
+cpu: Apple M1 Max
+BenchmarkMemorySave-10    	   10000	    108243 ns/op	  365279 B/op	      30 allocs/op
+BenchmarkMemorySave-10    	   10000	    108782 ns/op	  365272 B/op	      30 allocs/op
+BenchmarkMemorySave-10    	   10000	    110479 ns/op	  365272 B/op	      30 allocs/op
+BenchmarkMemoryFind-10    	53275418	        23.26 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryFind-10    	51414706	        23.73 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryFind-10    	52903833	        23.18 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/true18/shortener/internal/repository	7.677s
+
+Profile run (2000 operations):
+Command: env GOCACHE=/private/tmp/shortener-gocache go test ./internal/repository -run '^$' -bench '^BenchmarkMemorySave$' -benchtime=2000x -count=1 -memprofile=/Users/zinnatullin/GolandProjects/shortener/profiles/base.pprof -benchmem
+goos: darwin
+goarch: arm64
+pkg: github.com/true18/shortener/internal/repository
+cpu: Apple M1 Max
+BenchmarkMemorySave-10    	    2000	     18193 ns/op	   76571 B/op	      29 allocs/op
+PASS
+ok  	github.com/true18/shortener/internal/repository	0.611s
