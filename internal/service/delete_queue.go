@@ -35,6 +35,12 @@ type DeleteTask struct {
 	ShortIDs []string
 }
 
+// generate:reset
+type deleteBatch struct {
+	groups map[string][]string
+	count  int
+}
+
 // DeleteQueue batches user-scoped deletion requests for background processing.
 type DeleteQueue struct {
 	store  DeleteStore
@@ -93,18 +99,16 @@ func (q *DeleteQueue) run() {
 	ticker := time.NewTicker(deleteFlushInterval)
 	defer ticker.Stop()
 
-	groups := make(map[string][]string)
-	count := 0
+	batch := deleteBatch{groups: make(map[string][]string)}
 	flush := func() {
-		for userID, ids := range groups {
+		for userID, ids := range batch.groups {
 			_ = q.store.DeleteUserURLs(ids, userID)
 		}
-		groups = make(map[string][]string)
-		count = 0
+		batch.Reset()
 	}
 	add := func(task DeleteTask) {
-		groups[task.UserID] = append(groups[task.UserID], task.ShortIDs...)
-		count += len(task.ShortIDs)
+		batch.groups[task.UserID] = append(batch.groups[task.UserID], task.ShortIDs...)
+		batch.count += len(task.ShortIDs)
 	}
 	drain := func() {
 		for {
@@ -125,11 +129,11 @@ func (q *DeleteQueue) run() {
 			return
 		case task := <-q.tasks:
 			add(task)
-			if count >= deleteBatchSize {
+			if batch.count >= deleteBatchSize {
 				flush()
 			}
 		case <-ticker.C:
-			if count > 0 {
+			if batch.count > 0 {
 				flush()
 			}
 		}

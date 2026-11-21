@@ -11,3 +11,21 @@
 - инициализацию зависимостей (можно вынести в отдельный пакет `internal/app`)
 - настройку и запуск HTTP-сервера (можно вынести в отдельный пакет `internal/router`)
 - обработку сигналов завершения работы приложения
+
+## Build information
+
+При старте приложение печатает версию, дату сборки и commit в stdout. Пустые значения выводятся как `N/A`.
+
+Сборка с заданными значениями:
+
+```sh
+go build -ldflags "-X main.buildVersion=v1.0.0 -X main.buildDate=2026-11-15 -X main.buildCommit=abc1234" -o shortener ./cmd/shortener
+```
+
+Запуск бинарного файла без linker flags выводит:
+
+```text
+Build version: N/A
+Build date: N/A
+Build commit: N/A
+```
