@@ -9,27 +9,35 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/handler"
 	"github.com/true18/shortener/internal/repository"
 )
 
 const testBaseURL = "http://localhost:8080"
+const testUserID = "user-1"
 
 type fakeRepo struct {
-	idByURL map[string]string
-	urlByID map[string]string
-	next    int
+	idByURL  map[string]string
+	urlByID  map[string]string
+	userByID map[string]string
+	deleted  map[string]bool
+	order    []string
+	next     int
 }
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		idByURL: make(map[string]string),
-		urlByID: make(map[string]string),
+		idByURL:  make(map[string]string),
+		urlByID:  make(map[string]string),
+		userByID: make(map[string]string),
+		deleted:  make(map[string]bool),
 	}
 }
 
-func (f *fakeRepo) Save(originalURL string) (string, error) {
+func (f *fakeRepo) Save(originalURL string, userID string) (string, error) {
 	if id, ok := f.idByURL[originalURL]; ok {
 		return id, repository.ErrURLExists
 	}
@@ -37,11 +45,13 @@ func (f *fakeRepo) Save(originalURL string) (string, error) {
 	id := f.nextID()
 	f.idByURL[originalURL] = id
 	f.urlByID[id] = originalURL
+	f.userByID[id] = userID
+	f.order = append(f.order, id)
 
 	return id, nil
 }
 
-func (f *fakeRepo) SaveBatch(items []repository.BatchItem) ([]repository.BatchResult, error) {
+func (f *fakeRepo) SaveBatch(items []repository.BatchItem, userID string) ([]repository.BatchResult, error) {
 	results := make([]repository.BatchResult, len(items))
 	for i, item := range items {
 		id, ok := f.idByURL[item.OriginalURL]
@@ -49,6 +59,8 @@ func (f *fakeRepo) SaveBatch(items []repository.BatchItem) ([]repository.BatchRe
 			id = f.nextID()
 			f.idByURL[item.OriginalURL] = id
 			f.urlByID[id] = item.OriginalURL
+			f.userByID[id] = userID
+			f.order = append(f.order, id)
 		}
 
 		results[i] = repository.BatchResult{
@@ -65,8 +77,37 @@ func (f *fakeRepo) Find(id string) (string, error) {
 	if !ok {
 		return "", repository.ErrNotFound
 	}
+	if f.deleted[id] {
+		return "", repository.ErrDeleted
+	}
 
 	return originalURL, nil
+}
+
+func (f *fakeRepo) FindByUserID(userID string) ([]repository.UserURL, error) {
+	urls := make([]repository.UserURL, 0)
+	for _, id := range f.order {
+		if f.userByID[id] != userID || f.deleted[id] {
+			continue
+		}
+
+		urls = append(urls, repository.UserURL{
+			ShortID:     id,
+			OriginalURL: f.urlByID[id],
+		})
+	}
+
+	return urls, nil
+}
+
+func (f *fakeRepo) DeleteUserURLs(ids []string, userID string) error {
+	for _, id := range ids {
+		if f.userByID[id] == userID {
+			f.deleted[id] = true
+		}
+	}
+
+	return nil
 }
 
 func (f *fakeRepo) nextID() string {
@@ -89,15 +130,60 @@ func (p fakePinger) PingContext(context.Context) error {
 	return p.err
 }
 
+func newHandler(repo repository.Store) http.Handler {
+	return handler.New(repo, testBaseURL, nil, immediateDeleteQueue{repo: repo})
+}
+
+func newHandlerWithPinger(repo repository.Store, pinger handler.Pinger) http.Handler {
+	return handler.New(repo, testBaseURL, pinger, immediateDeleteQueue{repo: repo})
+}
+
+type immediateDeleteQueue struct {
+	repo repository.Store
+}
+
+func (q immediateDeleteQueue) EnqueueDelete(userID string, ids []string) error {
+	return q.repo.DeleteUserURLs(ids, userID)
+}
+
+type recordingDeleteQueue struct {
+	calls chan deleteCall
+	err   error
+}
+
+type deleteCall struct {
+	userID string
+	ids    []string
+}
+
+func newRecordingDeleteQueue() *recordingDeleteQueue {
+	return &recordingDeleteQueue{
+		calls: make(chan deleteCall, 1),
+	}
+}
+
+func (q *recordingDeleteQueue) EnqueueDelete(userID string, ids []string) error {
+	if q.err != nil {
+		return q.err
+	}
+
+	q.calls <- deleteCall{
+		userID: userID,
+		ids:    append([]string(nil), ids...),
+	}
+
+	return nil
+}
+
 func TestCreate(t *testing.T) {
 	repo := newFakeRepo()
-	h := handler.New(repo, testBaseURL, nil)
+	h := newHandler(repo)
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
 	req.Header.Set("Content-Type", "text/plain")
 	rec := httptest.NewRecorder()
 
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, withUser(req))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -115,11 +201,11 @@ func TestCreate(t *testing.T) {
 
 func TestCreateDuplicate(t *testing.T) {
 	repo := newFakeRepo()
-	h := handler.New(repo, testBaseURL, nil)
+	h := newHandler(repo)
 
 	firstReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
 	firstRec := httptest.NewRecorder()
-	h.ServeHTTP(firstRec, firstReq)
+	h.ServeHTTP(firstRec, withUser(firstReq))
 
 	if firstRec.Code != http.StatusCreated {
 		t.Fatalf("first status = %d, want %d", firstRec.Code, http.StatusCreated)
@@ -128,7 +214,7 @@ func TestCreateDuplicate(t *testing.T) {
 
 	secondReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("https://practicum.yandex.ru/"))
 	secondRec := httptest.NewRecorder()
-	h.ServeHTTP(secondRec, secondReq)
+	h.ServeHTTP(secondRec, withUser(secondReq))
 
 	if secondRec.Code != http.StatusConflict {
 		t.Fatalf("second status = %d, want %d", secondRec.Code, http.StatusConflict)
@@ -155,7 +241,7 @@ func TestCreateDuplicate(t *testing.T) {
 
 func TestCreateJSON(t *testing.T) {
 	repo := newFakeRepo()
-	h := handler.New(repo, testBaseURL, nil)
+	h := newHandler(repo)
 
 	req := httptest.NewRequest(
 		http.MethodPost,
@@ -165,7 +251,7 @@ func TestCreateJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, withUser(req))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -203,7 +289,7 @@ func TestCreateJSON(t *testing.T) {
 
 func TestCreateJSONDuplicate(t *testing.T) {
 	repo := newFakeRepo()
-	h := handler.New(repo, testBaseURL, nil)
+	h := newHandler(repo)
 
 	firstReq := httptest.NewRequest(
 		http.MethodPost,
@@ -211,7 +297,7 @@ func TestCreateJSONDuplicate(t *testing.T) {
 		strings.NewReader(`{"url":"https://practicum.yandex.ru"}`),
 	)
 	firstRec := httptest.NewRecorder()
-	h.ServeHTTP(firstRec, firstReq)
+	h.ServeHTTP(firstRec, withUser(firstReq))
 
 	if firstRec.Code != http.StatusCreated {
 		t.Fatalf("first status = %d, want %d", firstRec.Code, http.StatusCreated)
@@ -229,7 +315,7 @@ func TestCreateJSONDuplicate(t *testing.T) {
 		strings.NewReader(`{"url":"https://practicum.yandex.ru"}`),
 	)
 	secondRec := httptest.NewRecorder()
-	h.ServeHTTP(secondRec, secondReq)
+	h.ServeHTTP(secondRec, withUser(secondReq))
 
 	if secondRec.Code != http.StatusConflict {
 		t.Fatalf("second status = %d, want %d", secondRec.Code, http.StatusConflict)
@@ -263,7 +349,7 @@ func TestCreateJSONDuplicate(t *testing.T) {
 
 func TestCreateBatch(t *testing.T) {
 	repo := newFakeRepo()
-	h := handler.New(repo, testBaseURL, nil)
+	h := newHandler(repo)
 
 	req := httptest.NewRequest(
 		http.MethodPost,
@@ -276,7 +362,7 @@ func TestCreateBatch(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, withUser(req))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -307,11 +393,11 @@ func TestCreateBatch(t *testing.T) {
 
 func TestCreateBatchExistingURL(t *testing.T) {
 	repo := newFakeRepo()
-	id, err := repo.Save("https://practicum.yandex.ru")
+	id, err := repo.Save("https://practicum.yandex.ru", testUserID)
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
-	h := handler.New(repo, testBaseURL, nil)
+	h := newHandler(repo)
 
 	req := httptest.NewRequest(
 		http.MethodPost,
@@ -320,7 +406,7 @@ func TestCreateBatchExistingURL(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, withUser(req))
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
@@ -344,7 +430,7 @@ func TestCreateBatchExistingURL(t *testing.T) {
 func TestRedirect(t *testing.T) {
 	repo := newFakeRepo()
 	repo.urlByID["abc12345"] = "https://practicum.yandex.ru/"
-	h := handler.New(repo, testBaseURL, nil)
+	h := newHandler(repo)
 
 	req := httptest.NewRequest(http.MethodGet, "/abc12345", nil)
 	rec := httptest.NewRecorder()
@@ -401,7 +487,7 @@ func TestPing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newFakeRepo()
 			repo.urlByID["ping"] = "https://practicum.yandex.ru/"
-			h := handler.New(repo, testBaseURL, tt.pinger)
+			h := newHandlerWithPinger(repo, tt.pinger)
 
 			req := httptest.NewRequest(tt.method, "/ping", nil)
 			rec := httptest.NewRecorder()
@@ -413,6 +499,229 @@ func TestPing(t *testing.T) {
 			}
 			if rec.Code == http.StatusTemporaryRedirect {
 				t.Fatal("/ping was handled as short URL")
+			}
+		})
+	}
+}
+
+func TestUserURLsNoContent(t *testing.T) {
+	h := newHandler(newFakeRepo())
+	req := withUser(httptest.NewRequest(http.MethodGet, "/api/user/urls", nil))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestUserURLs(t *testing.T) {
+	repo := newFakeRepo()
+	id, err := repo.Save("https://practicum.yandex.ru", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	_, err = repo.Save("https://example.com", "other-user")
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	h := newHandler(repo)
+
+	req := withUser(httptest.NewRequest(http.MethodGet, "/api/user/urls", nil))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+
+	var resp []struct {
+		ShortURL    string `json:"short_url"`
+		OriginalURL string `json:"original_url"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("response len = %d, want %d", len(resp), 1)
+	}
+	if resp[0].ShortURL != testBaseURL+"/"+id {
+		t.Fatalf("short_url = %q, want %q", resp[0].ShortURL, testBaseURL+"/"+id)
+	}
+	if resp[0].OriginalURL != "https://practicum.yandex.ru" {
+		t.Fatalf("original_url = %q", resp[0].OriginalURL)
+	}
+}
+
+func TestUserURLsUnauthorized(t *testing.T) {
+	h := newHandler(newFakeRepo())
+	req := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestUserURLsBadMethod(t *testing.T) {
+	h := newHandler(newFakeRepo())
+	req := withUser(httptest.NewRequest(http.MethodPost, "/api/user/urls", nil))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestDeleteUserURLs(t *testing.T) {
+	repo := newFakeRepo()
+	id, err := repo.Save("https://practicum.yandex.ru", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	h := newHandler(repo)
+
+	req := withUser(httptest.NewRequest(http.MethodDelete, "/api/user/urls", strings.NewReader(`["  `+id+`  "]`)))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+
+	redirectReq := httptest.NewRequest(http.MethodGet, "/"+id, nil)
+	redirectRec := httptest.NewRecorder()
+	h.ServeHTTP(redirectRec, redirectReq)
+
+	if redirectRec.Code != http.StatusGone {
+		t.Fatalf("redirect status = %d, want %d", redirectRec.Code, http.StatusGone)
+	}
+
+	listReq := withUser(httptest.NewRequest(http.MethodGet, "/api/user/urls", nil))
+	listRec := httptest.NewRecorder()
+	h.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusNoContent {
+		t.Fatalf("list status = %d, want %d", listRec.Code, http.StatusNoContent)
+	}
+}
+
+func TestDeleteUserURLsEnqueues(t *testing.T) {
+	repo := newFakeRepo()
+	id, err := repo.Save("https://practicum.yandex.ru", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	queue := newRecordingDeleteQueue()
+	h := handler.New(repo, testBaseURL, nil, queue)
+
+	req := withUser(httptest.NewRequest(http.MethodDelete, "/api/user/urls", strings.NewReader(`["`+id+`"]`)))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+
+	select {
+	case call := <-queue.calls:
+		if call.userID != testUserID {
+			t.Fatalf("user id = %q, want %q", call.userID, testUserID)
+		}
+		if len(call.ids) != 1 || call.ids[0] != id {
+			t.Fatalf("ids = %+v, want [%q]", call.ids, id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("delete task was not enqueued")
+	}
+
+	if got, err := repo.Find(id); err != nil || got != "https://practicum.yandex.ru" {
+		t.Fatalf("Find after enqueue = %q, %v", got, err)
+	}
+}
+
+func TestDeleteUserURLsDoesNotDeleteOtherUserURL(t *testing.T) {
+	repo := newFakeRepo()
+	id, err := repo.Save("https://practicum.yandex.ru", "other-user")
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	h := newHandler(repo)
+
+	req := withUser(httptest.NewRequest(http.MethodDelete, "/api/user/urls", strings.NewReader(`["`+id+`"]`)))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+
+	redirectReq := httptest.NewRequest(http.MethodGet, "/"+id, nil)
+	redirectRec := httptest.NewRecorder()
+	h.ServeHTTP(redirectRec, redirectReq)
+
+	if redirectRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect status = %d, want %d", redirectRec.Code, http.StatusTemporaryRedirect)
+	}
+}
+
+func TestDeleteUserURLsUnauthorized(t *testing.T) {
+	h := newHandler(newFakeRepo())
+	req := httptest.NewRequest(http.MethodDelete, "/api/user/urls", strings.NewReader(`["abc12345"]`))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestDeleteUserURLsBadRequests(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "invalid json",
+			body: "{",
+		},
+		{
+			name: "not array",
+			body: `{"id":"abc12345"}`,
+		},
+		{
+			name: "empty array",
+			body: `[]`,
+		},
+		{
+			name: "empty id",
+			body: `[""]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHandler(newFakeRepo())
+			req := withUser(httptest.NewRequest(http.MethodDelete, "/api/user/urls", strings.NewReader(tt.body)))
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 			}
 		})
 	}
@@ -452,7 +761,7 @@ func TestCreateJSONBadRequests(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := handler.New(newFakeRepo(), testBaseURL, nil)
+			h := newHandler(newFakeRepo())
 			req := httptest.NewRequest(tt.method, "/api/shorten", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
 
@@ -514,7 +823,7 @@ func TestCreateBatchBadRequests(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := handler.New(newFakeRepo(), testBaseURL, nil)
+			h := newHandler(newFakeRepo())
 			req := httptest.NewRequest(tt.method, "/api/shorten/batch", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
 
@@ -593,7 +902,7 @@ func TestBadRequests(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := handler.New(newFakeRepo(), testBaseURL, nil)
+			h := newHandler(newFakeRepo())
 			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
 
@@ -608,7 +917,7 @@ func TestBadRequests(t *testing.T) {
 
 func TestStorageErrors(t *testing.T) {
 	errStorage := errors.New("storage failed")
-	h := handler.New(errorRepo{err: errStorage}, testBaseURL, nil)
+	h := newHandler(errorRepo{err: errStorage})
 
 	tests := []struct {
 		name   string
@@ -633,11 +942,20 @@ func TestStorageErrors(t *testing.T) {
 			target: "/api/shorten/batch",
 			body:   `[{"correlation_id":"1","original_url":"https://practicum.yandex.ru/"}]`,
 		},
+		{
+			name:   "delete error",
+			method: http.MethodDelete,
+			target: "/api/user/urls",
+			body:   `["abc12345"]`,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
+			if tt.method == http.MethodPost || tt.method == http.MethodDelete {
+				req = withUser(req)
+			}
 			rec := httptest.NewRecorder()
 
 			h.ServeHTTP(rec, req)
@@ -653,14 +971,26 @@ type errorRepo struct {
 	err error
 }
 
-func (r errorRepo) Save(string) (string, error) {
+func (r errorRepo) Save(string, string) (string, error) {
 	return "", r.err
 }
 
-func (r errorRepo) SaveBatch([]repository.BatchItem) ([]repository.BatchResult, error) {
+func (r errorRepo) SaveBatch([]repository.BatchItem, string) ([]repository.BatchResult, error) {
 	return nil, r.err
 }
 
 func (r errorRepo) Find(string) (string, error) {
 	return "", r.err
+}
+
+func (r errorRepo) FindByUserID(string) ([]repository.UserURL, error) {
+	return nil, r.err
+}
+
+func (r errorRepo) DeleteUserURLs([]string, string) error {
+	return r.err
+}
+
+func withUser(req *http.Request) *http.Request {
+	return req.WithContext(auth.WithUserID(req.Context(), testUserID))
 }

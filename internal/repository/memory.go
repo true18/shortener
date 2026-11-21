@@ -22,6 +22,7 @@ type Memory struct {
 	fileMu   sync.Mutex
 	urls     map[string]string
 	ids      map[string]string
+	deleted  map[string]bool
 	records  []fileRecord
 	nextUUID int
 	filePath string
@@ -31,6 +32,7 @@ func NewMemory() *Memory {
 	return &Memory{
 		urls:     make(map[string]string),
 		ids:      make(map[string]string),
+		deleted:  make(map[string]bool),
 		nextUUID: 1,
 	}
 }
@@ -46,7 +48,7 @@ func NewFile(path string) (*Memory, error) {
 	return store, nil
 }
 
-func (m *Memory) Save(originalURL string) (string, error) {
+func (m *Memory) Save(originalURL string, userID string) (string, error) {
 	if m.filePath != "" {
 		m.fileMu.Lock()
 		defer m.fileMu.Unlock()
@@ -58,7 +60,7 @@ func (m *Memory) Save(originalURL string) (string, error) {
 		return id, ErrURLExists
 	}
 
-	record, err := m.addURLLocked(originalURL)
+	record, err := m.addURLLocked(originalURL, userID)
 	if err != nil {
 		m.mu.Unlock()
 		return "", err
@@ -74,7 +76,7 @@ func (m *Memory) Save(originalURL string) (string, error) {
 	return record.ShortURL, nil
 }
 
-func (m *Memory) SaveBatch(items []BatchItem) ([]BatchResult, error) {
+func (m *Memory) SaveBatch(items []BatchItem, userID string) ([]BatchResult, error) {
 	if len(items) == 0 {
 		return []BatchResult{}, nil
 	}
@@ -85,7 +87,7 @@ func (m *Memory) SaveBatch(items []BatchItem) ([]BatchResult, error) {
 	}
 
 	m.mu.Lock()
-	results, added, changed, err := m.saveBatchLocked(items)
+	results, added, changed, err := m.saveBatchLocked(items, userID)
 	if err != nil {
 		m.mu.Unlock()
 		return nil, err
@@ -112,14 +114,64 @@ func (m *Memory) Find(id string) (string, error) {
 	if !ok {
 		return "", ErrNotFound
 	}
+	if m.deleted[id] {
+		return "", ErrDeleted
+	}
 
 	return originalURL, nil
+}
+
+func (m *Memory) FindByUserID(userID string) ([]UserURL, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	urls := make([]UserURL, 0)
+	for _, record := range m.records {
+		if record.UserID != userID || record.Deleted {
+			continue
+		}
+
+		urls = append(urls, UserURL{
+			ShortID:     record.ShortURL,
+			OriginalURL: record.OriginalURL,
+		})
+	}
+
+	return urls, nil
+}
+
+func (m *Memory) DeleteUserURLs(ids []string, userID string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	if m.filePath != "" {
+		m.fileMu.Lock()
+		defer m.fileMu.Unlock()
+	}
+
+	m.mu.Lock()
+	changed, changedIDs := m.deleteUserURLsLocked(ids, userID)
+	snapshot := cloneRecords(m.records)
+	m.mu.Unlock()
+
+	if !changed {
+		return nil
+	}
+	if err := m.save(snapshot); err != nil {
+		m.restoreDeleted(changedIDs)
+		return err
+	}
+
+	return nil
 }
 
 type fileRecord struct {
 	UUID        string `json:"uuid"`
 	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
+	UserID      string `json:"user_id"`
+	Deleted     bool   `json:"is_deleted"`
 }
 
 func (m *Memory) load() error {
@@ -147,6 +199,9 @@ func (m *Memory) load() error {
 		m.records = append(m.records, record)
 		m.urls[record.ShortURL] = record.OriginalURL
 		m.ids[record.OriginalURL] = record.ShortURL
+		if record.Deleted {
+			m.deleted[record.ShortURL] = true
+		}
 	}
 
 	m.nextUUID = nextUUID(m.records)
@@ -174,14 +229,14 @@ func (m *Memory) save(records []fileRecord) error {
 	return os.WriteFile(m.filePath, data, 0644)
 }
 
-func (m *Memory) saveBatchLocked(items []BatchItem) ([]BatchResult, []fileRecord, bool, error) {
+func (m *Memory) saveBatchLocked(items []BatchItem, userID string) ([]BatchResult, []fileRecord, bool, error) {
 	results := make([]BatchResult, len(items))
 	var added []fileRecord
 
 	for i, item := range items {
 		id, ok := m.ids[item.OriginalURL]
 		if !ok {
-			record, err := m.addURLLocked(item.OriginalURL)
+			record, err := m.addURLLocked(item.OriginalURL, userID)
 			if err != nil {
 				return nil, nil, false, err
 			}
@@ -199,7 +254,31 @@ func (m *Memory) saveBatchLocked(items []BatchItem) ([]BatchResult, []fileRecord
 	return results, added, len(added) > 0, nil
 }
 
-func (m *Memory) addURLLocked(originalURL string) (fileRecord, error) {
+func (m *Memory) deleteUserURLsLocked(ids []string, userID string) (bool, []string) {
+	want := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+
+	changedIDs := make([]string, 0, len(want))
+	for i := range m.records {
+		record := &m.records[i]
+		if record.UserID != userID || record.Deleted {
+			continue
+		}
+		if _, ok := want[record.ShortURL]; !ok {
+			continue
+		}
+
+		record.Deleted = true
+		m.deleted[record.ShortURL] = true
+		changedIDs = append(changedIDs, record.ShortURL)
+	}
+
+	return len(changedIDs) > 0, changedIDs
+}
+
+func (m *Memory) addURLLocked(originalURL string, userID string) (fileRecord, error) {
 	id, err := m.newIDLocked()
 	if err != nil {
 		return fileRecord{}, err
@@ -209,6 +288,7 @@ func (m *Memory) addURLLocked(originalURL string) (fileRecord, error) {
 		UUID:        strconv.Itoa(m.nextUUID),
 		ShortURL:    id,
 		OriginalURL: originalURL,
+		UserID:      userID,
 	}
 	m.urls[id] = originalURL
 	m.ids[originalURL] = id
@@ -251,6 +331,21 @@ func (m *Memory) rollback(records []fileRecord) {
 	}
 
 	m.nextUUID = nextUUID(m.records)
+}
+
+func (m *Memory) restoreDeleted(ids []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, id := range ids {
+		delete(m.deleted, id)
+		for i := range m.records {
+			if m.records[i].ShortURL == id {
+				m.records[i].Deleted = false
+				break
+			}
+		}
+	}
 }
 
 func cloneRecords(records []fileRecord) []fileRecord {

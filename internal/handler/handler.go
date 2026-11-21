@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/repository"
 )
 
@@ -19,6 +20,7 @@ type Handler struct {
 	repo    repository.Store
 	baseURL string
 	pinger  Pinger
+	deletes DeleteEnqueuer
 	router  chi.Router
 }
 
@@ -26,11 +28,16 @@ type Pinger interface {
 	PingContext(ctx context.Context) error
 }
 
-func New(repo repository.Store, baseURL string, pinger Pinger) *Handler {
+type DeleteEnqueuer interface {
+	EnqueueDelete(userID string, ids []string) error
+}
+
+func New(repo repository.Store, baseURL string, pinger Pinger, deletes DeleteEnqueuer) *Handler {
 	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		pinger:  pinger,
+		deletes: deletes,
 	}
 
 	r := chi.NewRouter()
@@ -43,6 +50,8 @@ func New(repo repository.Store, baseURL string, pinger Pinger) *Handler {
 	r.Post("/", h.create)
 	r.Post("/api/shorten/batch", h.createBatch)
 	r.Post("/api/shorten", h.createJSON)
+	r.Get("/api/user/urls", h.userURLs)
+	r.Delete("/api/user/urls", h.deleteUserURLs)
 	r.Get("/ping", h.ping)
 	r.Get("/{id}", h.redirect)
 
@@ -74,7 +83,13 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shortURL, exists, err := h.shorten(originalURL)
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		unauthorized(w)
+		return
+	}
+
+	shortURL, exists, err := h.shorten(originalURL, userID)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -110,7 +125,13 @@ func (h *Handler) createJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shortURL, exists, err := h.shorten(originalURL)
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		unauthorized(w)
+		return
+	}
+
+	shortURL, exists, err := h.shorten(originalURL, userID)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -168,7 +189,13 @@ func (h *Handler) createBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	results, err := h.repo.SaveBatch(items)
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		unauthorized(w)
+		return
+	}
+
+	results, err := h.repo.SaveBatch(items, userID)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -200,6 +227,10 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 		badRequest(w)
 		return
 	}
+	if errors.Is(err, repository.ErrDeleted) {
+		w.WriteHeader(http.StatusGone)
+		return
+	}
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -207,6 +238,87 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Location", originalURL)
 	w.WriteHeader(http.StatusTemporaryRedirect)
+}
+
+func (h *Handler) userURLs(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/user/urls" {
+		badRequest(w)
+		return
+	}
+
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		unauthorized(w)
+		return
+	}
+
+	urls, err := h.repo.FindByUserID(userID)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	if len(urls) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	resp := make([]struct {
+		ShortURL    string `json:"short_url"`
+		OriginalURL string `json:"original_url"`
+	}, len(urls))
+	for i, item := range urls {
+		resp[i].ShortURL = h.shortURL(item.ShortID)
+		resp[i].OriginalURL = item.OriginalURL
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) deleteUserURLs(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/user/urls" {
+		badRequest(w)
+		return
+	}
+	defer r.Body.Close()
+
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		unauthorized(w)
+		return
+	}
+
+	var ids []string
+	if err := json.NewDecoder(r.Body).Decode(&ids); err != nil {
+		badRequest(w)
+		return
+	}
+	if len(ids) == 0 {
+		badRequest(w)
+		return
+	}
+	trimmedIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			badRequest(w)
+			return
+		}
+		trimmedIDs = append(trimmedIDs, id)
+	}
+
+	if h.deletes == nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.deletes.EnqueueDelete(userID, trimmedIDs); err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (h *Handler) ping(w http.ResponseWriter, r *http.Request) {
@@ -223,8 +335,8 @@ func (h *Handler) ping(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *Handler) shorten(originalURL string) (string, bool, error) {
-	id, err := h.repo.Save(originalURL)
+func (h *Handler) shorten(originalURL string, userID string) (string, bool, error) {
+	id, err := h.repo.Save(originalURL, userID)
 	if errors.Is(err, repository.ErrURLExists) {
 		return h.shortURL(id), true, nil
 	}
@@ -254,4 +366,8 @@ func validURL(rawURL string) bool {
 
 func badRequest(w http.ResponseWriter) {
 	http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+}
+
+func unauthorized(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusUnauthorized)
 }
