@@ -1,9 +1,14 @@
 package service
 
 import (
+	"errors"
+	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/true18/shortener/internal/repository"
 )
 
 func TestDeleteQueueDeletesInBackground(t *testing.T) {
@@ -79,6 +84,72 @@ func TestDeleteQueueCloseFlushesPendingTasks(t *testing.T) {
 	}
 }
 
+func TestDeleteQueueCloseWaitsForWorker(t *testing.T) {
+	store := &blockingDeleteStore{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	queue := NewDeleteQueue(store)
+	if err := queue.EnqueueDelete("user-1", []string{"abc"}); err != nil {
+		t.Fatalf("EnqueueDelete returned error: %v", err)
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		queue.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("delete worker did not start")
+	}
+	select {
+	case <-closed:
+		t.Fatal("Close returned before repository deletion completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(store.release)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after repository deletion completed")
+	}
+
+	queue.Close()
+	if err := queue.EnqueueDelete("user-1", []string{"next"}); !errors.Is(err, ErrDeleteQueueClosed) {
+		t.Fatalf("EnqueueDelete after Close error = %v", err)
+	}
+}
+
+func TestDeleteQueueClosePersistsLastFileBatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.json")
+	store, err := repository.NewFile(path)
+	if err != nil {
+		t.Fatalf("NewFile: %v", err)
+	}
+	id, err := store.Save("https://example.com", "user-1")
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	queue := NewDeleteQueue(store)
+	if err := queue.EnqueueDelete("user-1", []string{id}); err != nil {
+		t.Fatalf("EnqueueDelete: %v", err)
+	}
+	queue.Close()
+
+	reopened, err := repository.NewFile(path)
+	if err != nil {
+		t.Fatalf("reopen storage: %v", err)
+	}
+	if _, err := reopened.Find(id); !errors.Is(err, repository.ErrDeleted) {
+		t.Fatalf("Find error = %v, want %v", err, repository.ErrDeleted)
+	}
+}
+
 func TestDeleteBatchReset(t *testing.T) {
 	batch := deleteBatch{
 		groups: map[string][]string{"user": {"one", "two"}},
@@ -108,6 +179,18 @@ func receiveDeleteTask(t *testing.T, calls <-chan DeleteTask) DeleteTask {
 
 type fakeDeleteStore struct {
 	calls chan DeleteTask
+}
+
+type blockingDeleteStore struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingDeleteStore) DeleteUserURLs([]string, string) error {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	return nil
 }
 
 func (s *fakeDeleteStore) DeleteUserURLs(ids []string, userID string) error {

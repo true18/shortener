@@ -2,10 +2,15 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/true18/shortener/internal/audit"
 	"github.com/true18/shortener/internal/auth"
@@ -27,6 +32,8 @@ const (
 )
 
 var errDatabaseNotOpen = errors.New("database is not open")
+
+const shutdownTimeout = 30 * time.Second
 
 // New builds the HTTP handler, initializes configured storage and audit observers, and owns their closers.
 func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error) {
@@ -55,8 +62,17 @@ func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error
 	return &managedHandler{Handler: wrapped, deletes: deletes, closers: closers}, nil
 }
 
-// Run serves HTTP requests at cfg.ServerAddress and closes server-owned resources on exit.
+// Run serves requests until the server stops and closes server-owned resources on exit.
 func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {
+	return RunContext(context.Background(), cfg, logger, db)
+}
+
+// RunContext serves HTTP or HTTPS requests and gracefully stops when ctx is done.
+func RunContext(ctx context.Context, cfg config.Config, logger *zap.Logger, db *sql.DB) (runErr error) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
 	h, err := New(cfg, logger, db)
 	if err != nil {
 		return err
@@ -65,32 +81,91 @@ func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {
 		defer func() {
 			if err := closer.Close(); err != nil {
 				logger.Error("close server resources", zap.Error(err))
+				runErr = errors.Join(runErr, fmt.Errorf("close server resources: %w", err))
 			}
 		}()
 	}
 
-	return http.ListenAndServe(cfg.ServerAddress, h)
+	server, err := newHTTPServer(cfg, h)
+	if err != nil {
+		return err
+	}
+
+	listener, err := net.Listen("tcp", cfg.ServerAddress)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	runErr = runHTTPServer(ctx, server, listener, cfg.EnableHTTPS, shutdownTimeout)
+	if runErr != nil {
+		logger.Error("serve requests", zap.Error(runErr))
+	}
+	return runErr
+}
+
+func runHTTPServer(ctx context.Context, server *http.Server, listener net.Listener, enableHTTPS bool, timeout time.Duration) error {
+	serveErrors := make(chan error, 1)
+	go func() {
+		if enableHTTPS {
+			serveErrors <- server.ServeTLS(listener, "", "")
+			return
+		}
+		serveErrors <- server.Serve(listener)
+	}()
+
+	select {
+	case err := <-serveErrors:
+		return normalizeServerError(err)
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			closeErr := server.Close()
+			serveErr := normalizeServerError(<-serveErrors)
+			return errors.Join(
+				fmt.Errorf("shutdown HTTP server: %w", err),
+				closeErr,
+				serveErr,
+			)
+		}
+
+		return normalizeServerError(<-serveErrors)
+	}
+}
+
+func normalizeServerError(err error) error {
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 type managedHandler struct {
 	http.Handler
-	closers []io.Closer
-	deletes *service.DeleteQueue
+	closers   []io.Closer
+	deletes   *service.DeleteQueue
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (h *managedHandler) Close() error {
-	if h.deletes != nil {
-		h.deletes.Close()
-	}
-
-	var errs []error
-	for _, closer := range h.closers {
-		if err := closer.Close(); err != nil {
-			errs = append(errs, err)
+	h.closeOnce.Do(func() {
+		if h.deletes != nil {
+			h.deletes.Close()
 		}
-	}
 
-	return errors.Join(errs...)
+		var errs []error
+		for _, closer := range h.closers {
+			if err := closer.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		h.closeErr = errors.Join(errs...)
+	})
+
+	return h.closeErr
 }
 
 func newAuditPublisher(cfg config.Config, logger *zap.Logger) (audit.Observer, []io.Closer, error) {

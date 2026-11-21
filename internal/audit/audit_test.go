@@ -167,6 +167,9 @@ func TestFileObserverReturnsWriteError(t *testing.T) {
 	if err := observer.Notify(context.Background(), Event{}); err == nil {
 		t.Fatal("Notify returned nil error after Close")
 	}
+	if err := observer.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
 }
 
 func TestHTTPObserverPostsEvent(t *testing.T) {

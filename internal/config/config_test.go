@@ -12,6 +12,7 @@ func TestParseDefaults(t *testing.T) {
 	unsetEnv(t, EnvDatabaseDSN)
 	unsetEnv(t, EnvAuditFile)
 	unsetEnv(t, EnvAuditURL)
+	unsetEnv(t, EnvEnableHTTPS)
 
 	cfg, err := Parse(nil)
 	if err != nil {
@@ -38,6 +39,54 @@ func TestParseDefaults(t *testing.T) {
 	}
 	if cfg.AuditURL != DefaultAuditURL {
 		t.Fatalf("AuditURL = %q, want %q", cfg.AuditURL, DefaultAuditURL)
+	}
+	if cfg.EnableHTTPS != DefaultEnableHTTPS {
+		t.Fatalf("EnableHTTPS = %t, want %t", cfg.EnableHTTPS, DefaultEnableHTTPS)
+	}
+}
+
+func TestParseHTTPSFlag(t *testing.T) {
+	unsetEnv(t, EnvEnableHTTPS)
+
+	cfg, err := Parse([]string{"-s"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.EnableHTTPS {
+		t.Fatal("EnableHTTPS = false, want true")
+	}
+}
+
+func TestParseHTTPSEnv(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{value: "true", want: true},
+		{value: "1", want: true},
+		{value: "false", want: false},
+		{value: "0", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv(EnvEnableHTTPS, tt.value)
+			cfg, err := Parse([]string{"-s=true"})
+			if err != nil {
+				t.Fatalf("Parse returned error: %v", err)
+			}
+			if cfg.EnableHTTPS != tt.want {
+				t.Fatalf("EnableHTTPS = %t, want %t", cfg.EnableHTTPS, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseInvalidHTTPSEnv(t *testing.T) {
+	t.Setenv(EnvEnableHTTPS, "sometimes")
+
+	if _, err := Parse(nil); err == nil {
+		t.Fatal("Parse returned nil error")
 	}
 }
 
