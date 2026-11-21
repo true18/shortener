@@ -43,7 +43,7 @@ func TestRunHTTPAndGRPCServesAndStops(t *testing.T) {
 
 			app := service.NewShortener(repository.NewMemory(), "https://short.test", nil, zap.NewNop())
 			var serverOptions []grpc.ServerOption
-			var clientCredentials credentials.TransportCredentials = insecure.NewCredentials()
+			clientCredentials := insecure.NewCredentials()
 			var clientTLS *tls.Config
 			if enableHTTPS {
 				serverOptions = append(serverOptions, grpc.Creds(credentials.NewTLS(httpServer.TLSConfig.Clone())))
