@@ -3,8 +3,11 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const deleteQueueSize = 1024
@@ -44,17 +47,23 @@ type deleteBatch struct {
 // DeleteQueue batches user-scoped deletion requests for background processing.
 type DeleteQueue struct {
 	store      DeleteStore
+	logger     *zap.Logger
 	tasks      chan DeleteTask
 	stop       chan struct{}
 	workerDone chan struct{}
 	mu         sync.RWMutex
 	closed     bool
+	closeErr   error
 }
 
 // NewDeleteQueue starts a worker that combines queued deletion tasks into batches.
-func NewDeleteQueue(store DeleteStore) *DeleteQueue {
+func NewDeleteQueue(store DeleteStore, logger *zap.Logger) *DeleteQueue {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	q := &DeleteQueue{
 		store:      store,
+		logger:     logger,
 		tasks:      make(chan DeleteTask, deleteQueueSize),
 		stop:       make(chan struct{}),
 		workerDone: make(chan struct{}),
@@ -86,8 +95,8 @@ func (q *DeleteQueue) EnqueueDelete(userID string, ids []string) error {
 	}
 }
 
-// Close stops accepting tasks and waits for the worker to flush queued deletions.
-func (q *DeleteQueue) Close() {
+// Close stops accepting tasks, flushes queued deletions, and returns the final flush error.
+func (q *DeleteQueue) Close() error {
 	q.mu.Lock()
 	if !q.closed {
 		q.closed = true
@@ -96,6 +105,7 @@ func (q *DeleteQueue) Close() {
 	q.mu.Unlock()
 
 	<-q.workerDone
+	return q.closeErr
 }
 
 func (q *DeleteQueue) run() {
@@ -105,11 +115,26 @@ func (q *DeleteQueue) run() {
 	defer ticker.Stop()
 
 	batch := deleteBatch{groups: make(map[string][]string)}
-	flush := func() {
+	flush := func() error {
+		var errs []error
 		for userID, ids := range batch.groups {
-			_ = q.store.DeleteUserURLs(ids, userID)
+			if err := q.store.DeleteUserURLs(ids, userID); err != nil {
+				q.logger.Error("delete URL batch failed",
+					zap.String("user_id", userID),
+					zap.Int("url_count", len(ids)),
+					zap.Error(err),
+				)
+				errs = append(errs, fmt.Errorf("delete URLs for user %q: %w", userID, err))
+				continue
+			}
+
+			delete(batch.groups, userID)
+			batch.count -= len(ids)
 		}
-		batch.Reset()
+		if len(errs) == 0 {
+			batch.Reset()
+		}
+		return errors.Join(errs...)
 	}
 	add := func(task DeleteTask) {
 		batch.groups[task.UserID] = append(batch.groups[task.UserID], task.ShortIDs...)
@@ -130,16 +155,16 @@ func (q *DeleteQueue) run() {
 		select {
 		case <-q.stop:
 			drain()
-			flush()
+			q.closeErr = flush()
 			return
 		case task := <-q.tasks:
 			add(task)
 			if batch.count >= deleteBatchSize {
-				flush()
+				_ = flush()
 			}
 		case <-ticker.C:
 			if batch.count > 0 {
-				flush()
+				_ = flush()
 			}
 		}
 	}

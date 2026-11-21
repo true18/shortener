@@ -115,6 +115,8 @@ go run ./cmd/shortener -config config.json
 CONFIG=config.json go run ./cmd/shortener
 ```
 
+Готовый безопасный шаблон находится в `config.example.json`. Локальный `config.json` игнорируется Git.
+
 Поддерживается полный набор runtime-настроек:
 
 ```json

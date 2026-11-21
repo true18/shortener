@@ -15,6 +15,7 @@ import (
 
 	"github.com/true18/shortener/internal/config"
 	"github.com/true18/shortener/internal/service"
+	"go.uber.org/zap"
 )
 
 func TestRunHTTPServerWaitsForActiveRequest(t *testing.T) {
@@ -173,7 +174,7 @@ func TestManagedHandlerCloseWaitsForDeletesAndIsIdempotent(t *testing.T) {
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	deletes := service.NewDeleteQueue(store)
+	deletes := service.NewDeleteQueue(store, zap.NewNop())
 	closer := &countingCloser{}
 	handler := &managedHandler{deletes: deletes, closers: []io.Closer{closer}}
 	if err := deletes.EnqueueDelete("user", []string{"id"}); err != nil {
@@ -199,6 +200,30 @@ func TestManagedHandlerCloseWaitsForDeletesAndIsIdempotent(t *testing.T) {
 	}
 	if closer.calls.Load() != 1 {
 		t.Fatalf("closer calls = %d, want 1", closer.calls.Load())
+	}
+}
+
+func TestManagedHandlerCloseReturnsDeleteQueueError(t *testing.T) {
+	deleteErr := errors.New("delete failed")
+	deletes := service.NewDeleteQueue(failingDeleteStore{err: deleteErr}, zap.NewNop())
+	closer := &countingCloser{}
+	handler := &managedHandler{deletes: deletes, closers: []io.Closer{closer}}
+	if err := deletes.EnqueueDelete("user", []string{"id"}); err != nil {
+		t.Fatalf("EnqueueDelete: %v", err)
+	}
+
+	err := handler.Close()
+	if !errors.Is(err, deleteErr) {
+		t.Fatalf("Close error = %v, want %v", err, deleteErr)
+	}
+	if closer.calls.Load() != 1 {
+		t.Fatalf("closer calls = %d, want 1", closer.calls.Load())
+	}
+	if err := handler.Close(); !errors.Is(err, deleteErr) {
+		t.Fatalf("second Close error = %v, want %v", err, deleteErr)
+	}
+	if closer.calls.Load() != 1 {
+		t.Fatalf("closer calls after second Close = %d, want 1", closer.calls.Load())
 	}
 }
 
@@ -232,6 +257,14 @@ func waitForListenerToClose(t *testing.T, address string) {
 type orderedDeleteStore struct {
 	started chan struct{}
 	release chan struct{}
+}
+
+type failingDeleteStore struct {
+	err error
+}
+
+func (s failingDeleteStore) DeleteUserURLs([]string, string) error {
+	return s.err
 }
 
 func (s *orderedDeleteStore) DeleteUserURLs([]string, string) error {

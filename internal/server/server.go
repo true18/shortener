@@ -66,14 +66,19 @@ func newManagedHandler(cfg config.Config, logger *zap.Logger, db *sql.DB) (*mana
 		pinger = db
 	}
 
-	deletes := service.NewDeleteQueue(store)
+	deletes := service.NewDeleteQueue(store, logger)
 	trustedSubnet, err := parseTrustedSubnet(cfg.TrustedSubnet)
 	if err != nil {
-		deletes.Close()
-		for _, closer := range closers {
-			_ = closer.Close()
+		var cleanupErrs []error
+		if closeErr := deletes.Close(); closeErr != nil {
+			cleanupErrs = append(cleanupErrs, closeErr)
 		}
-		return nil, nil, err
+		for _, closer := range closers {
+			if closeErr := closer.Close(); closeErr != nil {
+				cleanupErrs = append(cleanupErrs, closeErr)
+			}
+		}
+		return nil, nil, errors.Join(err, errors.Join(cleanupErrs...))
 	}
 	app := service.NewShortener(store, cfg.BaseURL, auditor, logger)
 	h := handler.NewWithApplication(store, pinger, deletes, app, trustedSubnet)
@@ -258,11 +263,13 @@ type managedHandler struct {
 
 func (h *managedHandler) Close() error {
 	h.closeOnce.Do(func() {
+		var errs []error
 		if h.deletes != nil {
-			h.deletes.Close()
+			if err := h.deletes.Close(); err != nil {
+				errs = append(errs, err)
+			}
 		}
 
-		var errs []error
 		for _, closer := range h.closers {
 			if err := closer.Close(); err != nil {
 				errs = append(errs, err)
