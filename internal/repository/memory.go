@@ -19,6 +19,7 @@ const (
 
 type Memory struct {
 	mu       sync.RWMutex
+	fileMu   sync.Mutex
 	urls     map[string]string
 	ids      map[string]string
 	records  []fileRecord
@@ -46,54 +47,61 @@ func NewFile(path string) (*Memory, error) {
 }
 
 func (m *Memory) Save(originalURL string) (string, error) {
-	m.mu.RLock()
-	id, ok := m.ids[originalURL]
-	m.mu.RUnlock()
-	if ok {
-		return id, nil
+	if m.filePath != "" {
+		m.fileMu.Lock()
+		defer m.fileMu.Unlock()
 	}
 
 	m.mu.Lock()
 	if id, ok := m.ids[originalURL]; ok {
 		m.mu.Unlock()
-		return id, nil
+		return id, ErrURLExists
 	}
 
-	var record fileRecord
-	var snapshot []fileRecord
-
-	for {
-		newID, err := newID()
-		if err != nil {
-			m.mu.Unlock()
-			return "", err
-		}
-		if _, exists := m.urls[newID]; exists {
-			continue
-		}
-
-		id = newID
-		record = fileRecord{
-			UUID:        strconv.Itoa(m.nextUUID),
-			ShortURL:    id,
-			OriginalURL: originalURL,
-		}
-		m.urls[id] = originalURL
-		m.ids[originalURL] = id
-		m.records = append(m.records, record)
-		m.nextUUID++
-
-		snapshot = cloneRecords(m.records)
-		break
+	record, err := m.addURLLocked(originalURL)
+	if err != nil {
+		m.mu.Unlock()
+		return "", err
 	}
+	snapshot := cloneRecords(m.records)
 	m.mu.Unlock()
 
 	if err := m.save(snapshot); err != nil {
-		m.rollback(record)
+		m.rollback([]fileRecord{record})
 		return "", err
 	}
 
-	return id, nil
+	return record.ShortURL, nil
+}
+
+func (m *Memory) SaveBatch(items []BatchItem) ([]BatchResult, error) {
+	if len(items) == 0 {
+		return []BatchResult{}, nil
+	}
+
+	if m.filePath != "" {
+		m.fileMu.Lock()
+		defer m.fileMu.Unlock()
+	}
+
+	m.mu.Lock()
+	results, added, changed, err := m.saveBatchLocked(items)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	snapshot := cloneRecords(m.records)
+	m.mu.Unlock()
+
+	if !changed {
+		return results, nil
+	}
+	if err := m.save(snapshot); err != nil {
+		m.rollback(added)
+		return nil, err
+	}
+
+	return results, nil
 }
 
 func (m *Memory) Find(id string) (string, error) {
@@ -166,21 +174,79 @@ func (m *Memory) save(records []fileRecord) error {
 	return os.WriteFile(m.filePath, data, 0644)
 }
 
-func (m *Memory) rollback(record fileRecord) {
+func (m *Memory) saveBatchLocked(items []BatchItem) ([]BatchResult, []fileRecord, bool, error) {
+	results := make([]BatchResult, len(items))
+	var added []fileRecord
+
+	for i, item := range items {
+		id, ok := m.ids[item.OriginalURL]
+		if !ok {
+			record, err := m.addURLLocked(item.OriginalURL)
+			if err != nil {
+				return nil, nil, false, err
+			}
+
+			id = record.ShortURL
+			added = append(added, record)
+		}
+
+		results[i] = BatchResult{
+			CorrelationID: item.CorrelationID,
+			ShortID:       id,
+		}
+	}
+
+	return results, added, len(added) > 0, nil
+}
+
+func (m *Memory) addURLLocked(originalURL string) (fileRecord, error) {
+	id, err := m.newIDLocked()
+	if err != nil {
+		return fileRecord{}, err
+	}
+
+	record := fileRecord{
+		UUID:        strconv.Itoa(m.nextUUID),
+		ShortURL:    id,
+		OriginalURL: originalURL,
+	}
+	m.urls[id] = originalURL
+	m.ids[originalURL] = id
+	m.records = append(m.records, record)
+	m.nextUUID++
+
+	return record, nil
+}
+
+func (m *Memory) newIDLocked() (string, error) {
+	for {
+		id, err := newID()
+		if err != nil {
+			return "", err
+		}
+		if _, exists := m.urls[id]; !exists {
+			return id, nil
+		}
+	}
+}
+
+func (m *Memory) rollback(records []fileRecord) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.ids[record.OriginalURL] == record.ShortURL {
-		delete(m.ids, record.OriginalURL)
-	}
-	if m.urls[record.ShortURL] == record.OriginalURL {
-		delete(m.urls, record.ShortURL)
-	}
+	for _, record := range records {
+		if m.ids[record.OriginalURL] == record.ShortURL {
+			delete(m.ids, record.OriginalURL)
+		}
+		if m.urls[record.ShortURL] == record.OriginalURL {
+			delete(m.urls, record.ShortURL)
+		}
 
-	for i, saved := range m.records {
-		if saved.UUID == record.UUID && saved.ShortURL == record.ShortURL {
-			m.records = append(m.records[:i], m.records[i+1:]...)
-			break
+		for i, saved := range m.records {
+			if saved.UUID == record.UUID && saved.ShortURL == record.ShortURL {
+				m.records = append(m.records[:i], m.records[i+1:]...)
+				break
+			}
 		}
 	}
 

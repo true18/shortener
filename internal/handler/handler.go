@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,13 +18,19 @@ import (
 type Handler struct {
 	repo    repository.Store
 	baseURL string
+	pinger  Pinger
 	router  chi.Router
 }
 
-func New(repo repository.Store, baseURL string) *Handler {
+type Pinger interface {
+	PingContext(ctx context.Context) error
+}
+
+func New(repo repository.Store, baseURL string, pinger Pinger) *Handler {
 	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
+		pinger:  pinger,
 	}
 
 	r := chi.NewRouter()
@@ -34,7 +41,9 @@ func New(repo repository.Store, baseURL string) *Handler {
 		badRequest(w)
 	})
 	r.Post("/", h.create)
+	r.Post("/api/shorten/batch", h.createBatch)
 	r.Post("/api/shorten", h.createJSON)
+	r.Get("/ping", h.ping)
 	r.Get("/{id}", h.redirect)
 
 	h.router = r
@@ -65,14 +74,18 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shortURL, err := h.shorten(originalURL)
+	shortURL, exists, err := h.shorten(originalURL)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusCreated)
+	if exists {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
 	_, _ = w.Write([]byte(shortURL))
 }
 
@@ -97,19 +110,82 @@ func (h *Handler) createJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shortURL, err := h.shorten(originalURL)
+	shortURL, exists, err := h.shorten(originalURL)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	if exists {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
 	_ = json.NewEncoder(w).Encode(struct {
 		Result string `json:"result"`
 	}{
 		Result: shortURL,
 	})
+}
+
+func (h *Handler) createBatch(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/shorten/batch" {
+		badRequest(w)
+		return
+	}
+	defer r.Body.Close()
+
+	var req []struct {
+		CorrelationID string `json:"correlation_id"`
+		OriginalURL   string `json:"original_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		badRequest(w)
+		return
+	}
+	if len(req) == 0 {
+		badRequest(w)
+		return
+	}
+
+	items := make([]repository.BatchItem, len(req))
+	for i, item := range req {
+		if strings.TrimSpace(item.CorrelationID) == "" {
+			badRequest(w)
+			return
+		}
+
+		originalURL := strings.TrimSpace(item.OriginalURL)
+		if !validURL(originalURL) {
+			badRequest(w)
+			return
+		}
+
+		items[i] = repository.BatchItem{
+			CorrelationID: item.CorrelationID,
+			OriginalURL:   originalURL,
+		}
+	}
+
+	results, err := h.repo.SaveBatch(items)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	resp := make([]struct {
+		CorrelationID string `json:"correlation_id"`
+		ShortURL      string `json:"short_url"`
+	}, len(results))
+	for i, item := range results {
+		resp[i].CorrelationID = item.CorrelationID
+		resp[i].ShortURL = h.shortURL(item.ShortID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
@@ -133,13 +209,34 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusTemporaryRedirect)
 }
 
-func (h *Handler) shorten(originalURL string) (string, error) {
-	id, err := h.repo.Save(originalURL)
-	if err != nil {
-		return "", err
+func (h *Handler) ping(w http.ResponseWriter, r *http.Request) {
+	if h.pinger == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 
-	return h.baseURL + "/" + id, nil
+	if err := h.pinger.PingContext(r.Context()); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) shorten(originalURL string) (string, bool, error) {
+	id, err := h.repo.Save(originalURL)
+	if errors.Is(err, repository.ErrURLExists) {
+		return h.shortURL(id), true, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+
+	return h.shortURL(id), false, nil
+}
+
+func (h *Handler) shortURL(id string) string {
+	return h.baseURL + "/" + id
 }
 
 func validURL(rawURL string) bool {

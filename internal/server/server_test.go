@@ -3,7 +3,11 @@ package server_test
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +20,12 @@ import (
 )
 
 const testBaseURL = "http://localhost:8080"
+
+const pingDriverName = "shortener_ping_test"
+
+func init() {
+	sql.Register(pingDriverName, pingDriver{})
+}
 
 func TestShortenJSONWithoutGzip(t *testing.T) {
 	h := newTestServer(t)
@@ -107,10 +117,129 @@ func TestShortenJSONWithGzipRequest(t *testing.T) {
 	}
 }
 
+func TestShortenBatchWithGzipResponse(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten/batch",
+		strings.NewReader(`[{"correlation_id":"1","original_url":"https://practicum.yandex.ru"}]`),
+	)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want %q", got, "gzip")
+	}
+
+	var resp []struct {
+		CorrelationID string `json:"correlation_id"`
+		ShortURL      string `json:"short_url"`
+	}
+	if err := json.Unmarshal(readGzip(t, rec.Body), &resp); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("response len = %d, want %d", len(resp), 1)
+	}
+	if resp[0].CorrelationID != "1" {
+		t.Fatalf("correlation_id = %q, want %q", resp[0].CorrelationID, "1")
+	}
+	if !strings.HasPrefix(resp[0].ShortURL, testBaseURL+"/") {
+		t.Fatalf("short_url = %q, want prefix %q", resp[0].ShortURL, testBaseURL+"/")
+	}
+}
+
+func TestShortenBatchWithGzipRequest(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten/batch",
+		gzipBody(t, `[{"correlation_id":"1","original_url":"https://practicum.yandex.ru"}]`),
+	)
+	req.Header.Set("Content-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var resp []struct {
+		CorrelationID string `json:"correlation_id"`
+		ShortURL      string `json:"short_url"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("response len = %d, want %d", len(resp), 1)
+	}
+	if resp[0].CorrelationID != "1" {
+		t.Fatalf("correlation_id = %q, want %q", resp[0].CorrelationID, "1")
+	}
+	if !strings.HasPrefix(resp[0].ShortURL, testBaseURL+"/") {
+		t.Fatalf("short_url = %q, want prefix %q", resp[0].ShortURL, testBaseURL+"/")
+	}
+}
+
 func TestBadGzipRequest(t *testing.T) {
 	h := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader("not gzip"))
 	req.Header.Set("Content-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestPingWithoutDatabase(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestPingWithDatabase(t *testing.T) {
+	h := newTestServerWithDB(t, openPingDB(t, false))
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestPingWithDatabaseError(t *testing.T) {
+	h := newTestServerWithDB(t, openPingDB(t, true))
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestPingBadMethod(t *testing.T) {
+	h := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/ping", nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
@@ -142,11 +271,18 @@ func TestPlainTextResponseIsNotGzipped(t *testing.T) {
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 
+	return newTestServerWithDB(t, nil)
+}
+
+func newTestServerWithDB(t *testing.T, db *sql.DB) http.Handler {
+	t.Helper()
+
 	h, err := server.New(config.Config{
-		BaseURL:         testBaseURL,
-		ServerAddress:   "localhost:8080",
-		FileStoragePath: t.TempDir() + "/storage.json",
-	}, zap.NewNop())
+		BaseURL:            testBaseURL,
+		ServerAddress:      "localhost:8080",
+		FileStoragePath:    t.TempDir() + "/storage.json",
+		FileStoragePathSet: true,
+	}, zap.NewNop(), db)
 	if err != nil {
 		t.Fatalf("server.New returned error: %v", err)
 	}
@@ -184,4 +320,54 @@ func readGzip(t *testing.T, body io.Reader) []byte {
 	}
 
 	return data
+}
+
+func openPingDB(t *testing.T, fail bool) *sql.DB {
+	t.Helper()
+
+	name := "ok"
+	if fail {
+		name = "fail"
+	}
+
+	db, err := sql.Open(pingDriverName, name)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	return db
+}
+
+type pingDriver struct{}
+
+func (pingDriver) Open(name string) (driver.Conn, error) {
+	conn := pingConn{}
+	if name == "fail" {
+		conn.err = errors.New("ping failed")
+	}
+
+	return conn, nil
+}
+
+type pingConn struct {
+	err error
+}
+
+func (c pingConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (c pingConn) Close() error {
+	return nil
+}
+
+func (c pingConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (c pingConn) Ping(context.Context) error {
+	return c.err
 }
