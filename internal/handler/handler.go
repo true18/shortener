@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -14,12 +15,12 @@ import (
 )
 
 type Handler struct {
-	repo    repository.URLStorer
+	repo    repository.Store
 	baseURL string
 	router  chi.Router
 }
 
-func New(repo repository.URLStorer, baseURL string) *Handler {
+func New(repo repository.Store, baseURL string) *Handler {
 	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -33,6 +34,7 @@ func New(repo repository.URLStorer, baseURL string) *Handler {
 		badRequest(w)
 	})
 	r.Post("/", h.create)
+	r.Post("/api/shorten", h.createJSON)
 	r.Get("/{id}", h.redirect)
 
 	h.router = r
@@ -63,7 +65,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := h.repo.Save(originalURL)
+	shortURL, err := h.shorten(originalURL)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -71,7 +73,43 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusCreated)
-	_, _ = w.Write([]byte(h.baseURL + "/" + id))
+	_, _ = w.Write([]byte(shortURL))
+}
+
+func (h *Handler) createJSON(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/shorten" {
+		badRequest(w)
+		return
+	}
+	defer r.Body.Close()
+
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		badRequest(w)
+		return
+	}
+
+	originalURL := strings.TrimSpace(req.URL)
+	if !validURL(originalURL) {
+		badRequest(w)
+		return
+	}
+
+	shortURL, err := h.shorten(originalURL)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(struct {
+		Result string `json:"result"`
+	}{
+		Result: shortURL,
+	})
 }
 
 func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +133,15 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusTemporaryRedirect)
 }
 
+func (h *Handler) shorten(originalURL string) (string, error) {
+	id, err := h.repo.Save(originalURL)
+	if err != nil {
+		return "", err
+	}
+
+	return h.baseURL + "/" + id, nil
+}
+
 func validURL(rawURL string) bool {
 	if strings.IndexFunc(rawURL, unicode.IsSpace) >= 0 {
 		return false
@@ -105,7 +152,7 @@ func validURL(rawURL string) bool {
 		return false
 	}
 
-	return u.IsAbs() && u.Hostname() != "" && (u.Scheme == "http" || u.Scheme == "https")
+	return u.Hostname() != "" && (u.Scheme == "http" || u.Scheme == "https")
 }
 
 func badRequest(w http.ResponseWriter) {

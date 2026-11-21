@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -71,6 +72,54 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestCreateJSON(t *testing.T) {
+	repo := newFakeRepo()
+	h := handler.New(repo, testBaseURL)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/shorten",
+		strings.NewReader(`{"url":"https://practicum.yandex.ru"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+
+	var resp struct {
+		Result string `json:"result"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode response: %v", err)
+	}
+	if resp.Result == "" {
+		t.Fatal("result is empty")
+	}
+	if !strings.HasPrefix(resp.Result, testBaseURL+"/") {
+		t.Fatalf("result = %q, want prefix %q", resp.Result, testBaseURL+"/")
+	}
+
+	id := strings.TrimPrefix(resp.Result, testBaseURL+"/")
+	redirectReq := httptest.NewRequest(http.MethodGet, "/"+id, nil)
+	redirectRec := httptest.NewRecorder()
+
+	h.ServeHTTP(redirectRec, redirectReq)
+
+	if redirectRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect status = %d, want %d", redirectRec.Code, http.StatusTemporaryRedirect)
+	}
+	if got := redirectRec.Header().Get("Location"); got != "https://practicum.yandex.ru" {
+		t.Fatalf("Location = %q, want %q", got, "https://practicum.yandex.ru")
+	}
+}
+
 func TestRedirect(t *testing.T) {
 	repo := newFakeRepo()
 	repo.urlByID["abc12345"] = "https://practicum.yandex.ru/"
@@ -86,6 +135,53 @@ func TestRedirect(t *testing.T) {
 	}
 	if got := rec.Header().Get("Location"); got != "https://practicum.yandex.ru/" {
 		t.Fatalf("Location = %q, want %q", got, "https://practicum.yandex.ru/")
+	}
+}
+
+func TestCreateJSONBadRequests(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		body   string
+	}{
+		{
+			name:   "invalid json",
+			method: http.MethodPost,
+			body:   "{",
+		},
+		{
+			name:   "missing url",
+			method: http.MethodPost,
+			body:   `{}`,
+		},
+		{
+			name:   "empty url",
+			method: http.MethodPost,
+			body:   `{"url":""}`,
+		},
+		{
+			name:   "invalid url",
+			method: http.MethodPost,
+			body:   `{"url":"ftp://example.com/"}`,
+		},
+		{
+			name:   "unsupported method",
+			method: http.MethodGet,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := handler.New(newFakeRepo(), testBaseURL)
+			req := httptest.NewRequest(tt.method, "/api/shorten", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+		})
 	}
 }
 

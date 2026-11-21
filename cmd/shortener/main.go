@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/true18/shortener/internal/config"
 	"github.com/true18/shortener/internal/server"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -16,7 +16,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := server.Run(cfg); err != nil {
-		log.Fatal(err)
+	logger, err := zap.NewProduction()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "logger error: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = logger.Sync()
+	}()
+
+	if err := server.Run(cfg, logger); err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Exit(1)
 	}
 }
