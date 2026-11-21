@@ -1,3 +1,4 @@
+// Package handler implements the HTTP API for shortening and resolving URLs.
 package handler
 
 import (
@@ -8,36 +9,65 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
+	"github.com/true18/shortener/internal/audit"
 	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/repository"
 )
 
+// Handler routes URL API requests to a repository and its supporting services.
 type Handler struct {
 	repo    repository.Store
 	baseURL string
 	pinger  Pinger
 	deletes DeleteEnqueuer
+	auditor audit.Observer
+	logger  *zap.Logger
 	router  chi.Router
 }
 
+// Pinger checks the health of the database used by the server.
 type Pinger interface {
+	// PingContext reports whether the database is reachable within ctx.
 	PingContext(ctx context.Context) error
 }
 
+// DeleteEnqueuer accepts user-scoped URL deletion tasks for background processing.
 type DeleteEnqueuer interface {
+	// EnqueueDelete queues IDs for soft deletion by userID.
 	EnqueueDelete(userID string, ids []string) error
 }
 
+// New creates an HTTP handler without audit event delivery.
 func New(repo repository.Store, baseURL string, pinger Pinger, deletes DeleteEnqueuer) *Handler {
+	return NewWithAudit(repo, baseURL, pinger, deletes, nil, nil)
+}
+
+// NewWithAudit creates a handler that publishes successful shorten and follow events to auditor.
+func NewWithAudit(
+	repo repository.Store,
+	baseURL string,
+	pinger Pinger,
+	deletes DeleteEnqueuer,
+	auditor audit.Observer,
+	logger *zap.Logger,
+) *Handler {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
 	h := &Handler{
 		repo:    repo,
 		baseURL: strings.TrimRight(baseURL, "/"),
 		pinger:  pinger,
 		deletes: deletes,
+		auditor: auditor,
+		logger:  logger,
 	}
 
 	r := chi.NewRouter()
@@ -60,6 +90,7 @@ func New(repo repository.Store, baseURL string, pinger Pinger, deletes DeleteEnq
 	return h
 }
 
+// ServeHTTP dispatches a request to the matching URL API endpoint.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.router.ServeHTTP(w, r)
 }
@@ -93,6 +124,9 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
+	}
+	if !exists {
+		h.audit(r.Context(), audit.ActionShorten, userID, originalURL)
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
@@ -135,6 +169,9 @@ func (h *Handler) createJSON(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
+	}
+	if !exists {
+		h.audit(r.Context(), audit.ActionShorten, userID, originalURL)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -235,6 +272,9 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
+
+	userID, _ := auth.UserIDFromContext(r.Context())
+	h.audit(r.Context(), audit.ActionFollow, userID, originalURL)
 
 	w.Header().Set("Location", originalURL)
 	w.WriteHeader(http.StatusTemporaryRedirect)
@@ -349,6 +389,22 @@ func (h *Handler) shorten(originalURL string, userID string) (string, bool, erro
 
 func (h *Handler) shortURL(id string) string {
 	return h.baseURL + "/" + id
+}
+
+func (h *Handler) audit(ctx context.Context, action string, userID string, originalURL string) {
+	if h.auditor == nil {
+		return
+	}
+
+	err := h.auditor.Notify(ctx, audit.Event{
+		Timestamp: time.Now().Unix(),
+		Action:    action,
+		UserID:    userID,
+		URL:       originalURL,
+	})
+	if err != nil {
+		h.logger.Error("audit delivery failed", zap.Error(err))
+	}
 }
 
 func validURL(rawURL string) bool {

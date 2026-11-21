@@ -17,6 +17,7 @@ const (
 	idLen   = 8
 )
 
+// Memory stores short URLs in memory and optionally persists them to a JSON file.
 type Memory struct {
 	mu       sync.RWMutex
 	fileMu   sync.Mutex
@@ -28,6 +29,7 @@ type Memory struct {
 	filePath string
 }
 
+// NewMemory creates an empty in-memory URL store.
 func NewMemory() *Memory {
 	return &Memory{
 		urls:     make(map[string]string),
@@ -37,6 +39,7 @@ func NewMemory() *Memory {
 	}
 }
 
+// NewFile opens a file-backed store, loading existing records when present.
 func NewFile(path string) (*Memory, error) {
 	store := NewMemory()
 	store.filePath = path
@@ -48,6 +51,7 @@ func NewFile(path string) (*Memory, error) {
 	return store, nil
 }
 
+// Save stores an original URL and returns its short ID. A duplicate returns the existing ID with ErrURLExists.
 func (m *Memory) Save(originalURL string, userID string) (string, error) {
 	if m.filePath != "" {
 		m.fileMu.Lock()
@@ -65,17 +69,23 @@ func (m *Memory) Save(originalURL string, userID string) (string, error) {
 		m.mu.Unlock()
 		return "", err
 	}
-	snapshot := cloneRecords(m.records)
+	var snapshot []fileRecord
+	if m.filePath != "" {
+		snapshot = cloneRecords(m.records)
+	}
 	m.mu.Unlock()
 
-	if err := m.save(snapshot); err != nil {
-		m.rollback([]fileRecord{record})
-		return "", err
+	if m.filePath != "" {
+		if err := m.save(snapshot); err != nil {
+			m.rollback([]fileRecord{record})
+			return "", err
+		}
 	}
 
 	return record.ShortURL, nil
 }
 
+// SaveBatch stores URLs for one user and returns results in input order.
 func (m *Memory) SaveBatch(items []BatchItem, userID string) ([]BatchResult, error) {
 	if len(items) == 0 {
 		return []BatchResult{}, nil
@@ -92,10 +102,13 @@ func (m *Memory) SaveBatch(items []BatchItem, userID string) ([]BatchResult, err
 		m.mu.Unlock()
 		return nil, err
 	}
-	snapshot := cloneRecords(m.records)
+	var snapshot []fileRecord
+	if changed && m.filePath != "" {
+		snapshot = cloneRecords(m.records)
+	}
 	m.mu.Unlock()
 
-	if !changed {
+	if !changed || m.filePath == "" {
 		return results, nil
 	}
 	if err := m.save(snapshot); err != nil {
@@ -106,6 +119,7 @@ func (m *Memory) SaveBatch(items []BatchItem, userID string) ([]BatchResult, err
 	return results, nil
 }
 
+// Find returns the original URL for an active short ID, or ErrNotFound or ErrDeleted.
 func (m *Memory) Find(id string) (string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -121,6 +135,7 @@ func (m *Memory) Find(id string) (string, error) {
 	return originalURL, nil
 }
 
+// FindByUserID returns active URLs belonging to userID.
 func (m *Memory) FindByUserID(userID string) ([]UserURL, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -140,6 +155,7 @@ func (m *Memory) FindByUserID(userID string) ([]UserURL, error) {
 	return urls, nil
 }
 
+// DeleteUserURLs soft-deletes IDs owned by userID; unknown and foreign IDs are ignored.
 func (m *Memory) DeleteUserURLs(ids []string, userID string) error {
 	if len(ids) == 0 {
 		return nil
@@ -152,10 +168,13 @@ func (m *Memory) DeleteUserURLs(ids []string, userID string) error {
 
 	m.mu.Lock()
 	changed, changedIDs := m.deleteUserURLsLocked(ids, userID)
-	snapshot := cloneRecords(m.records)
+	var snapshot []fileRecord
+	if changed && m.filePath != "" {
+		snapshot = cloneRecords(m.records)
+	}
 	m.mu.Unlock()
 
-	if !changed {
+	if !changed || m.filePath == "" {
 		return nil
 	}
 	if err := m.save(snapshot); err != nil {

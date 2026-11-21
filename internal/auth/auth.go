@@ -1,3 +1,4 @@
+// Package auth signs user cookies and makes the verified user ID available to handlers.
 package auth
 
 import (
@@ -11,12 +12,14 @@ import (
 	"strings"
 )
 
+// CookieName is the name of the signed cookie carrying a user ID.
 const CookieName = "user_id"
 
 const secret = "shortener-auth-cookie-secret"
 
 type userIDKey struct{}
 
+// Middleware verifies the user cookie or issues a new signed cookie when needed.
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cookie, err := r.Cookie(CookieName); err == nil {
@@ -42,10 +45,12 @@ func Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// WithUserID returns a context carrying userID for downstream handlers.
 func WithUserID(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, userIDKey{}, userID)
 }
 
+// UserIDFromContext returns a non-empty user ID when one is present in ctx.
 func UserIDFromContext(ctx context.Context) (string, bool) {
 	userID, ok := ctx.Value(userIDKey{}).(string)
 	if !ok || userID == "" {
@@ -55,6 +60,7 @@ func UserIDFromContext(ctx context.Context) (string, bool) {
 	return userID, true
 }
 
+// NewCookie creates an HTTP-only cookie containing a signed user ID.
 func NewCookie(userID string) *http.Cookie {
 	return &http.Cookie{
 		Name:     CookieName,
@@ -64,6 +70,7 @@ func NewCookie(userID string) *http.Cookie {
 	}
 }
 
+// Parse verifies a signed cookie value and returns its user ID when valid.
 func Parse(value string) (string, bool) {
 	encodedUserID, signature, ok := strings.Cut(value, ".")
 	if !ok {

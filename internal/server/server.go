@@ -1,10 +1,13 @@
+// Package server assembles the URL service's storage, handlers, and middleware.
 package server
 
 import (
 	"database/sql"
 	"errors"
+	"io"
 	"net/http"
 
+	"github.com/true18/shortener/internal/audit"
 	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/config"
 	"github.com/true18/shortener/internal/handler"
@@ -25,8 +28,17 @@ const (
 
 var errDatabaseNotOpen = errors.New("database is not open")
 
+// New builds the HTTP handler, initializes configured storage and audit observers, and owns their closers.
 func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
 	store, err := newStore(cfg, db)
+	if err != nil {
+		return nil, err
+	}
+	auditor, closers, err := newAuditPublisher(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -37,18 +49,78 @@ func New(cfg config.Config, logger *zap.Logger, db *sql.DB) (http.Handler, error
 	}
 
 	deletes := service.NewDeleteQueue(store)
-	h := handler.New(store, cfg.BaseURL, pinger, deletes)
+	h := handler.NewWithAudit(store, cfg.BaseURL, pinger, deletes, auditor, logger)
+	wrapped := middleware.RequestLogger(logger)(auth.Middleware(middleware.Gzip(h)))
 
-	return middleware.RequestLogger(logger)(auth.Middleware(middleware.Gzip(h))), nil
+	return &managedHandler{Handler: wrapped, deletes: deletes, closers: closers}, nil
 }
 
+// Run serves HTTP requests at cfg.ServerAddress and closes server-owned resources on exit.
 func Run(cfg config.Config, logger *zap.Logger, db *sql.DB) error {
 	h, err := New(cfg, logger, db)
 	if err != nil {
 		return err
 	}
+	if closer, ok := h.(io.Closer); ok {
+		defer func() {
+			if err := closer.Close(); err != nil {
+				logger.Error("close server resources", zap.Error(err))
+			}
+		}()
+	}
 
 	return http.ListenAndServe(cfg.ServerAddress, h)
+}
+
+type managedHandler struct {
+	http.Handler
+	closers []io.Closer
+	deletes *service.DeleteQueue
+}
+
+func (h *managedHandler) Close() error {
+	if h.deletes != nil {
+		h.deletes.Close()
+	}
+
+	var errs []error
+	for _, closer := range h.closers {
+		if err := closer.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func newAuditPublisher(cfg config.Config, logger *zap.Logger) (audit.Observer, []io.Closer, error) {
+	if cfg.AuditFile == "" && cfg.AuditURL == "" {
+		return nil, nil, nil
+	}
+
+	observers := make([]audit.Observer, 0, 2)
+	closers := make([]io.Closer, 0, 1)
+	if cfg.AuditFile != "" {
+		observer, err := audit.NewFileObserver(cfg.AuditFile)
+		if err != nil {
+			return nil, nil, err
+		}
+		observers = append(observers, observer)
+		closers = append(closers, observer)
+	}
+	if cfg.AuditURL != "" {
+		observer, err := audit.NewHTTPObserver(cfg.AuditURL, nil)
+		if err != nil {
+			for _, closer := range closers {
+				_ = closer.Close()
+			}
+			return nil, nil, err
+		}
+		observers = append(observers, observer)
+	}
+
+	queue := audit.NewQueue(audit.NewPublisher(observers...), logger)
+	return queue, append([]io.Closer{queue}, closers...), nil
 }
 
 func newStore(cfg config.Config, db *sql.DB) (repository.Store, error) {

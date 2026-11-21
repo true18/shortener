@@ -1,3 +1,4 @@
+// Package main starts the URL shortener HTTP service.
 package main
 
 import (

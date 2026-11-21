@@ -1,3 +1,4 @@
+// Package migrations embeds and applies the PostgreSQL schema migrations.
 package migrations
 
 import (
@@ -13,6 +14,7 @@ import (
 //go:embed *.sql
 var fs embed.FS
 
+// Up applies all pending migrations using the caller's open database handle.
 func Up(db *sql.DB) error {
 	source, err := iofs.New(fs, ".")
 	if err != nil {
