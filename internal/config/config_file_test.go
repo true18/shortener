@@ -46,6 +46,32 @@ func TestParseConfigFileAllValues(t *testing.T) {
 	}
 }
 
+func TestConfigExampleContainsAllRuntimeSettings(t *testing.T) {
+	clearRuntimeEnv(t)
+	path := filepath.Join("..", "..", "config.example.json")
+
+	values, err := loadFile(path)
+	if err != nil {
+		t.Fatalf("loadFile: %v", err)
+	}
+	if values.ServerAddress == nil || values.BaseURL == nil || values.FileStoragePath == nil ||
+		values.DatabaseDSN == nil || values.EnableHTTPS == nil || values.AuditFile == nil ||
+		values.AuditURL == nil || values.TrustedSubnet == nil || values.GRPCAddress == nil {
+		t.Fatal("config.example.json does not contain every runtime setting")
+	}
+
+	cfg, err := Parse([]string{"-c", path})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.TrustedSubnet != "192.168.1.0/24" {
+		t.Fatalf("TrustedSubnet = %q", cfg.TrustedSubnet)
+	}
+	if cfg.GRPCAddress != "localhost:3200" {
+		t.Fatalf("GRPCAddress = %q", cfg.GRPCAddress)
+	}
+}
+
 func TestParseConfigPathSources(t *testing.T) {
 	tests := []struct {
 		name string

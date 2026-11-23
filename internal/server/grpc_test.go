@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -172,6 +174,59 @@ func TestRunContextSharesStorageBetweenHTTPAndGRPC(t *testing.T) {
 		t.Fatalf("RunContext: %v", err)
 	}
 	stopped = true
+}
+
+func TestRunContextDefaultDisablesGRPC(t *testing.T) {
+	if config.DefaultGRPCAddress != "" {
+		t.Fatalf("DefaultGRPCAddress = %q, want disabled gRPC", config.DefaultGRPCAddress)
+	}
+
+	occupied, err := net.Listen("tcp4", "127.0.0.1:3200")
+	if err != nil && !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("occupy port 3200: %v", err)
+	}
+	if occupied != nil {
+		defer occupied.Close()
+	}
+
+	httpAddress := reserveAddress(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- RunContext(ctx, config.Config{
+			ServerAddress: httpAddress,
+			BaseURL:       "http://" + httpAddress,
+			GRPCAddress:   config.DefaultGRPCAddress,
+		}, zap.NewNop(), nil)
+	}()
+
+	waitForHTTPServer(t, httpAddress)
+	request, err := http.NewRequest(http.MethodPost, "http://"+httpAddress+"/", strings.NewReader("https://example.com/http-only"))
+	if err != nil {
+		cancel()
+		t.Fatalf("NewRequest: %v", err)
+	}
+	request.Header.Set("Content-Type", "text/plain")
+	response, err := localHTTPClient(nil).Do(request)
+	if err != nil {
+		cancel()
+		t.Fatalf("HTTP shorten: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		cancel()
+		t.Fatalf("HTTP status = %d", response.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("RunContext: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunContext did not stop without gRPC")
+	}
 }
 
 func TestRunHTTPAndGRPCWaitsForActiveRPC(t *testing.T) {

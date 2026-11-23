@@ -33,8 +33,8 @@ const (
 	DefaultConfigPath = ""
 	// DefaultTrustedSubnet denies access to internal statistics by default.
 	DefaultTrustedSubnet = ""
-	// DefaultGRPCAddress is the default gRPC listen address.
-	DefaultGRPCAddress = "localhost:3200"
+	// DefaultGRPCAddress disables the gRPC server by default.
+	DefaultGRPCAddress = ""
 	// EnvServerAddress names the environment variable for the HTTP listen address.
 	EnvServerAddress = "SERVER_ADDRESS"
 	// EnvBaseURL names the environment variable for the public short-link base URL.

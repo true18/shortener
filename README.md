@@ -127,9 +127,13 @@ CONFIG=config.json go run ./cmd/shortener
   "database_dsn": "",
   "enable_https": true,
   "audit_file": "/tmp/shortener-audit.jsonl",
-  "audit_url": ""
+  "audit_url": "",
+  "trusted_subnet": "192.168.1.0/24",
+  "grpc_address": "localhost:3200"
 }
 ```
+
+`config.example.json` содержит примеры всех поддерживаемых runtime-параметров без секретов и персональных настроек.
 
 Приоритет источников: переменные окружения, явно переданные CLI-флаги, JSON-файл, значения по умолчанию. Поэтому `-s=false` может выключить HTTPS, включённый в JSON, а `ENABLE_HTTPS=true` снова перекроет флаг. `ENABLE_HTTPS` принимает стандартные boolean-значения Go: `true`, `false`, `1` и `0`. Неизвестные поля, некорректный JSON и указанный, но недоступный файл считаются ошибкой запуска. Если путь к файлу не задан, сервис работает с флагами, окружением и прежними значениями по умолчанию.
 
@@ -162,7 +166,7 @@ TRUSTED_SUBNET=192.168.1.0/24 go run ./cmd/shortener
 
 ## gRPC API
 
-HTTP и gRPC используют одно хранилище и общую бизнес-логику. По умолчанию gRPC слушает `localhost:3200`; адрес можно изменить через `-g`, `GRPC_ADDRESS` или поле JSON `grpc_address`. Явное пустое значение отключает gRPC:
+HTTP и gRPC используют одно хранилище и общую бизнес-логику. По умолчанию gRPC отключён, поэтому HTTP- или HTTPS-сервер не пытается занять дополнительный порт. gRPC включается явным непустым адресом через `-g`, `GRPC_ADDRESS` или поле JSON `grpc_address`; пустое значение отключает его:
 
 ```bash
 go run ./cmd/shortener -a localhost:8080 -g localhost:3200

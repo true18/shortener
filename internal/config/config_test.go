@@ -48,8 +48,11 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.TrustedSubnet != DefaultTrustedSubnet {
 		t.Fatalf("TrustedSubnet = %q, want %q", cfg.TrustedSubnet, DefaultTrustedSubnet)
 	}
-	if cfg.GRPCAddress != DefaultGRPCAddress {
-		t.Fatalf("GRPCAddress = %q, want %q", cfg.GRPCAddress, DefaultGRPCAddress)
+	if DefaultGRPCAddress != "" {
+		t.Fatalf("DefaultGRPCAddress = %q, want disabled gRPC", DefaultGRPCAddress)
+	}
+	if cfg.GRPCAddress != "" {
+		t.Fatalf("GRPCAddress = %q, want disabled gRPC", cfg.GRPCAddress)
 	}
 }
 
