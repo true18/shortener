@@ -6,6 +6,6 @@
   "enable_https": false,
   "audit_file": "",
   "audit_url": "",
-  "trusted_subnet": "192.168.1.0/24",
+  "trusted_subnet": "127.0.0.1/32",
   "grpc_address": "localhost:3200"
 }

@@ -64,7 +64,7 @@ func TestConfigExampleContainsAllRuntimeSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if cfg.TrustedSubnet != "192.168.1.0/24" {
+	if cfg.TrustedSubnet != "127.0.0.1/32" {
 		t.Fatalf("TrustedSubnet = %q", cfg.TrustedSubnet)
 	}
 	if cfg.GRPCAddress != "localhost:3200" {
