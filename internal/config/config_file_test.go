@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +70,40 @@ func TestConfigExampleContainsAllRuntimeSettings(t *testing.T) {
 	}
 	if cfg.GRPCAddress != "localhost:3200" {
 		t.Fatalf("GRPCAddress = %q", cfg.GRPCAddress)
+	}
+	if _, _, err := net.ParseCIDR(cfg.TrustedSubnet); err != nil {
+		t.Fatalf("TrustedSubnet is not a valid CIDR: %v", err)
+	}
+	host, port, err := net.SplitHostPort(cfg.GRPCAddress)
+	if err != nil || host != "localhost" || port != "3200" {
+		t.Fatalf("GRPCAddress = %q, want localhost:3200", cfg.GRPCAddress)
+	}
+}
+
+func TestParseExplicitEmptyGRPCAddressFromConfig(t *testing.T) {
+	clearRuntimeEnv(t)
+	path := writeConfig(t, `{"grpc_address":""}`)
+
+	cfg, err := Parse([]string{"-c", path})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.GRPCAddress != "" {
+		t.Fatalf("GRPCAddress = %q, want disabled gRPC", cfg.GRPCAddress)
+	}
+}
+
+func TestParseEmptyGRPCEnvironmentOverridesConfig(t *testing.T) {
+	clearRuntimeEnv(t)
+	path := writeConfig(t, `{"grpc_address":"localhost:3200"}`)
+	t.Setenv(EnvGRPCAddress, "")
+
+	cfg, err := Parse([]string{"-c", path})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.GRPCAddress != "" {
+		t.Fatalf("GRPCAddress = %q, want disabled gRPC", cfg.GRPCAddress)
 	}
 }
 
