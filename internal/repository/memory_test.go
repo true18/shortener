@@ -139,6 +139,71 @@ func TestMemorySaveDuplicate(t *testing.T) {
 	}
 }
 
+func TestMemoryStatsIncludesDeletedURLs(t *testing.T) {
+	store := NewMemory()
+
+	empty, err := store.Stats()
+	if err != nil {
+		t.Fatalf("Stats returned error: %v", err)
+	}
+	if empty.URLs != 0 || empty.Users != 0 {
+		t.Fatalf("empty stats = %+v", empty)
+	}
+
+	firstID, err := store.Save("https://example.com/one", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	if _, err := store.Save("https://example.com/two", testUserID); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	if _, err := store.Save("https://example.com/three", otherUserID); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	if err := store.DeleteUserURLs([]string{firstID}, testUserID); err != nil {
+		t.Fatalf("DeleteUserURLs returned error: %v", err)
+	}
+
+	stats, err := store.Stats()
+	if err != nil {
+		t.Fatalf("Stats returned error: %v", err)
+	}
+	if stats.URLs != 3 || stats.Users != 2 {
+		t.Fatalf("stats = %+v, want 3 URLs and 2 users", stats)
+	}
+}
+
+func TestFileStatsSurviveReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage.json")
+	store, err := NewFile(path)
+	if err != nil {
+		t.Fatalf("NewFile returned error: %v", err)
+	}
+
+	id, err := store.Save("https://example.com/one", testUserID)
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	if _, err := store.Save("https://example.com/two", otherUserID); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	if err := store.DeleteUserURLs([]string{id}, testUserID); err != nil {
+		t.Fatalf("DeleteUserURLs returned error: %v", err)
+	}
+
+	loaded, err := NewFile(path)
+	if err != nil {
+		t.Fatalf("NewFile returned error: %v", err)
+	}
+	stats, err := loaded.Stats()
+	if err != nil {
+		t.Fatalf("Stats returned error: %v", err)
+	}
+	if stats.URLs != 2 || stats.Users != 2 {
+		t.Fatalf("stats = %+v, want 2 URLs and 2 users", stats)
+	}
+}
+
 func TestMemoryFindByUserID(t *testing.T) {
 	store := NewMemory()
 

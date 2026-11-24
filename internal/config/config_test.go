@@ -13,6 +13,8 @@ func TestParseDefaults(t *testing.T) {
 	unsetEnv(t, EnvAuditFile)
 	unsetEnv(t, EnvAuditURL)
 	unsetEnv(t, EnvEnableHTTPS)
+	unsetEnv(t, EnvTrustedSubnet)
+	unsetEnv(t, EnvGRPCAddress)
 
 	cfg, err := Parse(nil)
 	if err != nil {
@@ -42,6 +44,88 @@ func TestParseDefaults(t *testing.T) {
 	}
 	if cfg.EnableHTTPS != DefaultEnableHTTPS {
 		t.Fatalf("EnableHTTPS = %t, want %t", cfg.EnableHTTPS, DefaultEnableHTTPS)
+	}
+	if cfg.TrustedSubnet != DefaultTrustedSubnet {
+		t.Fatalf("TrustedSubnet = %q, want %q", cfg.TrustedSubnet, DefaultTrustedSubnet)
+	}
+	if DefaultGRPCAddress != "" {
+		t.Fatalf("DefaultGRPCAddress = %q, want disabled gRPC", DefaultGRPCAddress)
+	}
+	if cfg.GRPCAddress != "" {
+		t.Fatalf("GRPCAddress = %q, want disabled gRPC", cfg.GRPCAddress)
+	}
+}
+
+func TestParseGRPCAddressSourcesAndPriority(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		env  *string
+		want string
+	}{
+		{name: "flag", args: []string{"-g", "127.0.0.1:9000"}, want: "127.0.0.1:9000"},
+		{name: "explicit empty", args: []string{"-g", ""}, want: ""},
+		{name: "environment", env: stringPointer("127.0.0.1:9001"), want: "127.0.0.1:9001"},
+		{name: "environment overrides flag", args: []string{"-g", "127.0.0.1:9000"}, env: stringPointer("127.0.0.1:9001"), want: "127.0.0.1:9001"},
+		{name: "empty environment overrides flag", args: []string{"-g", "127.0.0.1:9000"}, env: stringPointer(""), want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			unsetEnv(t, EnvGRPCAddress)
+			if tt.env != nil {
+				t.Setenv(EnvGRPCAddress, *tt.env)
+			}
+			cfg, err := Parse(tt.args)
+			if err != nil {
+				t.Fatalf("Parse returned error: %v", err)
+			}
+			if cfg.GRPCAddress != tt.want {
+				t.Fatalf("GRPCAddress = %q, want %q", cfg.GRPCAddress, tt.want)
+			}
+		})
+	}
+}
+
+func stringPointer(value string) *string {
+	return &value
+}
+
+func TestParseTrustedSubnetSourcesAndPriority(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		env  string
+		want string
+	}{
+		{name: "flag", args: []string{"-t", "192.168.1.0/24"}, want: "192.168.1.0/24"},
+		{name: "environment", env: "2001:db8::/32", want: "2001:db8::/32"},
+		{name: "environment overrides flag", args: []string{"-t", "192.168.1.0/24"}, env: "10.0.0.0/8", want: "10.0.0.0/8"},
+		{name: "explicit empty", args: []string{"-t", ""}, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			unsetEnv(t, EnvTrustedSubnet)
+			if tt.env != "" {
+				t.Setenv(EnvTrustedSubnet, tt.env)
+			}
+
+			cfg, err := Parse(tt.args)
+			if err != nil {
+				t.Fatalf("Parse returned error: %v", err)
+			}
+			if cfg.TrustedSubnet != tt.want {
+				t.Fatalf("TrustedSubnet = %q, want %q", cfg.TrustedSubnet, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseInvalidTrustedSubnet(t *testing.T) {
+	unsetEnv(t, EnvTrustedSubnet)
+	if _, err := Parse([]string{"-t", "192.168.1.42"}); err == nil {
+		t.Fatal("Parse returned nil error")
 	}
 }
 

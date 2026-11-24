@@ -5,18 +5,22 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/true18/shortener/internal/repository"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestDeleteQueueDeletesInBackground(t *testing.T) {
 	store := &fakeDeleteStore{
 		calls: make(chan DeleteTask, 1),
 	}
-	queue := NewDeleteQueue(store)
-	defer queue.Close()
+	queue := NewDeleteQueue(store, zap.NewNop())
+	defer func() { _ = queue.Close() }()
 
 	ids := []string{"abc12345"}
 	if err := queue.EnqueueDelete("user-1", ids); err != nil {
@@ -37,10 +41,40 @@ func TestDeleteQueueDeletesInBackground(t *testing.T) {
 	}
 }
 
+func TestDeleteQueueRetriesAndLogsScheduledFlushError(t *testing.T) {
+	deleteErr := errors.New("delete failed")
+	store := &retryDeleteStore{
+		calls:     make(chan DeleteTask, 2),
+		err:       deleteErr,
+		failUntil: 1,
+	}
+	core, logs := observer.New(zapcore.ErrorLevel)
+	queue := NewDeleteQueue(store, zap.New(core))
+
+	if err := queue.EnqueueDelete("user-1", []string{"abc12345"}); err != nil {
+		t.Fatalf("EnqueueDelete returned error: %v", err)
+	}
+	first := receiveDeleteTask(t, store.calls)
+	second := receiveDeleteTask(t, store.calls)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("retried task = %+v, want %+v", second, first)
+	}
+	if got := logs.Len(); got != 1 {
+		t.Fatalf("error log count = %d, want 1", got)
+	}
+	entry := logs.All()[0]
+	if entry.Message != "delete URL batch failed" || entry.ContextMap()["error"] != deleteErr.Error() {
+		t.Fatalf("log entry = %+v", entry)
+	}
+	if err := queue.Close(); err != nil {
+		t.Fatalf("Close returned error after successful retry: %v", err)
+	}
+}
+
 func TestDeleteQueueBatchesByUser(t *testing.T) {
 	store := &fakeDeleteStore{calls: make(chan DeleteTask, 2)}
-	queue := NewDeleteQueue(store)
-	defer queue.Close()
+	queue := NewDeleteQueue(store, zap.NewNop())
+	defer func() { _ = queue.Close() }()
 
 	if err := queue.EnqueueDelete("user-a", []string{"a1"}); err != nil {
 		t.Fatalf("EnqueueDelete returned error: %v", err)
@@ -70,17 +104,79 @@ func TestDeleteQueueBatchesByUser(t *testing.T) {
 }
 
 func TestDeleteQueueCloseFlushesPendingTasks(t *testing.T) {
-	store := &fakeDeleteStore{calls: make(chan DeleteTask, 1)}
-	queue := NewDeleteQueue(store)
+	store := &fakeDeleteStore{calls: make(chan DeleteTask, 2)}
+	queue := NewDeleteQueue(store, zap.NewNop())
 
+	if err := queue.EnqueueDelete("user-1", []string{"one"}); err != nil {
+		t.Fatalf("EnqueueDelete returned error: %v", err)
+	}
+	if err := queue.EnqueueDelete("user-2", []string{"two"}); err != nil {
+		t.Fatalf("EnqueueDelete returned error: %v", err)
+	}
+	if err := queue.EnqueueDelete("user-1", []string{"three"}); err != nil {
+		t.Fatalf("EnqueueDelete returned error: %v", err)
+	}
+	if err := queue.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	calls := []DeleteTask{receiveDeleteTask(t, store.calls), receiveDeleteTask(t, store.calls)}
+	for _, call := range calls {
+		switch call.UserID {
+		case "user-1":
+			if !reflect.DeepEqual(call.ShortIDs, []string{"one", "three"}) {
+				t.Fatalf("user-1 ids = %+v", call.ShortIDs)
+			}
+		case "user-2":
+			if !reflect.DeepEqual(call.ShortIDs, []string{"two"}) {
+				t.Fatalf("user-2 ids = %+v", call.ShortIDs)
+			}
+		default:
+			t.Fatalf("unexpected user %q", call.UserID)
+		}
+	}
+}
+
+func TestDeleteQueueCloseReturnsFinalFlushError(t *testing.T) {
+	deleteErr := errors.New("final delete failed")
+	store := &retryDeleteStore{
+		calls:     make(chan DeleteTask, 8),
+		err:       deleteErr,
+		failUntil: 100,
+	}
+	core, logs := observer.New(zapcore.ErrorLevel)
+	queue := NewDeleteQueue(store, zap.New(core))
 	if err := queue.EnqueueDelete("user-1", []string{"abc"}); err != nil {
 		t.Fatalf("EnqueueDelete returned error: %v", err)
 	}
-	queue.Close()
 
-	call := receiveDeleteTask(t, store.calls)
-	if !reflect.DeepEqual(call.ShortIDs, []string{"abc"}) {
-		t.Fatalf("short ids = %+v, want [abc]", call.ShortIDs)
+	const callers = 4
+	errs := make(chan error, callers)
+	var ready sync.WaitGroup
+	ready.Add(callers)
+	start := make(chan struct{})
+	for range callers {
+		go func() {
+			ready.Done()
+			<-start
+			errs <- queue.Close()
+		}()
+	}
+	ready.Wait()
+	close(start)
+	for range callers {
+		if err := <-errs; !errors.Is(err, deleteErr) {
+			t.Fatalf("Close error = %v, want %v", err, deleteErr)
+		}
+	}
+	if err := queue.Close(); !errors.Is(err, deleteErr) {
+		t.Fatalf("repeated Close error = %v, want %v", err, deleteErr)
+	}
+	if logs.Len() == 0 {
+		t.Fatal("final flush error was not logged")
+	}
+	if got := store.attempts.Load(); got == 0 {
+		t.Fatal("DeleteUserURLs was not called")
 	}
 }
 
@@ -89,14 +185,14 @@ func TestDeleteQueueCloseWaitsForWorker(t *testing.T) {
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	queue := NewDeleteQueue(store)
+	queue := NewDeleteQueue(store, zap.NewNop())
 	if err := queue.EnqueueDelete("user-1", []string{"abc"}); err != nil {
 		t.Fatalf("EnqueueDelete returned error: %v", err)
 	}
 
 	closed := make(chan struct{})
 	go func() {
-		queue.Close()
+		_ = queue.Close()
 		close(closed)
 	}()
 
@@ -118,7 +214,9 @@ func TestDeleteQueueCloseWaitsForWorker(t *testing.T) {
 		t.Fatal("Close did not return after repository deletion completed")
 	}
 
-	queue.Close()
+	if err := queue.Close(); err != nil {
+		t.Fatalf("second Close returned error: %v", err)
+	}
 	if err := queue.EnqueueDelete("user-1", []string{"next"}); !errors.Is(err, ErrDeleteQueueClosed) {
 		t.Fatalf("EnqueueDelete after Close error = %v", err)
 	}
@@ -135,11 +233,13 @@ func TestDeleteQueueClosePersistsLastFileBatch(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	queue := NewDeleteQueue(store)
+	queue := NewDeleteQueue(store, zap.NewNop())
 	if err := queue.EnqueueDelete("user-1", []string{id}); err != nil {
 		t.Fatalf("EnqueueDelete: %v", err)
 	}
-	queue.Close()
+	if err := queue.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
 
 	reopened, err := repository.NewFile(path)
 	if err != nil {
@@ -187,6 +287,13 @@ type blockingDeleteStore struct {
 	once    sync.Once
 }
 
+type retryDeleteStore struct {
+	calls     chan DeleteTask
+	err       error
+	failUntil int32
+	attempts  atomic.Int32
+}
+
 func (s *blockingDeleteStore) DeleteUserURLs([]string, string) error {
 	s.once.Do(func() { close(s.started) })
 	<-s.release
@@ -199,5 +306,17 @@ func (s *fakeDeleteStore) DeleteUserURLs(ids []string, userID string) error {
 		ShortIDs: append([]string(nil), ids...),
 	}
 
+	return nil
+}
+
+func (s *retryDeleteStore) DeleteUserURLs(ids []string, userID string) error {
+	attempt := s.attempts.Add(1)
+	s.calls <- DeleteTask{
+		UserID:   userID,
+		ShortIDs: append([]string(nil), ids...),
+	}
+	if attempt <= s.failUntil {
+		return s.err
+	}
 	return nil
 }

@@ -181,6 +181,16 @@ func (p *Postgres) DeleteUserURLs(ids []string, userID string) error {
 	return err
 }
 
+// Stats returns total URL and distinct non-empty user counts in one query.
+func (p *Postgres) Stats() (Stats, error) {
+	var stats Stats
+	err := p.db.QueryRow(`
+		SELECT COUNT(*), COUNT(DISTINCT NULLIF(user_id, ''))
+		FROM urls
+	`).Scan(&stats.URLs, &stats.Users)
+	return stats, err
+}
+
 func isShortURLConflict(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) &&

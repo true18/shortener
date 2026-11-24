@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
-	"net/url"
 	"strings"
-	"time"
-	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -18,16 +16,16 @@ import (
 	"github.com/true18/shortener/internal/audit"
 	"github.com/true18/shortener/internal/auth"
 	"github.com/true18/shortener/internal/repository"
+	"github.com/true18/shortener/internal/service"
 )
 
 // Handler routes URL API requests to a repository and its supporting services.
 type Handler struct {
 	repo    repository.Store
-	baseURL string
 	pinger  Pinger
 	deletes DeleteEnqueuer
-	auditor audit.Observer
-	logger  *zap.Logger
+	app     *service.Shortener
+	trusted *net.IPNet
 	router  chi.Router
 }
 
@@ -57,17 +55,37 @@ func NewWithAudit(
 	auditor audit.Observer,
 	logger *zap.Logger,
 ) *Handler {
-	if logger == nil {
-		logger = zap.NewNop()
-	}
+	return NewWithAuditAndTrustedSubnet(repo, baseURL, pinger, deletes, auditor, logger, nil)
+}
 
+// NewWithAuditAndTrustedSubnet creates a handler with audit delivery and protected internal statistics.
+func NewWithAuditAndTrustedSubnet(
+	repo repository.Store,
+	baseURL string,
+	pinger Pinger,
+	deletes DeleteEnqueuer,
+	auditor audit.Observer,
+	logger *zap.Logger,
+	trustedSubnet *net.IPNet,
+) *Handler {
+	app := service.NewShortener(repo, baseURL, auditor, logger)
+	return NewWithApplication(repo, pinger, deletes, app, trustedSubnet)
+}
+
+// NewWithApplication creates an HTTP handler using the shared URL application service.
+func NewWithApplication(
+	repo repository.Store,
+	pinger Pinger,
+	deletes DeleteEnqueuer,
+	app *service.Shortener,
+	trustedSubnet *net.IPNet,
+) *Handler {
 	h := &Handler{
 		repo:    repo,
-		baseURL: strings.TrimRight(baseURL, "/"),
 		pinger:  pinger,
 		deletes: deletes,
-		auditor: auditor,
-		logger:  logger,
+		app:     app,
+		trusted: trustedSubnet,
 	}
 
 	r := chi.NewRouter()
@@ -83,11 +101,38 @@ func NewWithAudit(
 	r.Get("/api/user/urls", h.userURLs)
 	r.Delete("/api/user/urls", h.deleteUserURLs)
 	r.Get("/ping", h.ping)
+	r.Get("/api/internal/stats", h.stats)
 	r.Get("/{id}", h.redirect)
 
 	h.router = r
 
 	return h
+}
+
+func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
+	if !isTrustedIP(h.trusted, r.Header.Get("X-Real-IP")) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	stats, err := h.repo.Stats()
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(stats)
+}
+
+func isTrustedIP(network *net.IPNet, value string) bool {
+	if network == nil {
+		return false
+	}
+
+	ip := net.ParseIP(strings.TrimSpace(value))
+	return ip != nil && network.Contains(ip)
 }
 
 // ServeHTTP dispatches a request to the matching URL API endpoint.
@@ -108,27 +153,20 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	originalURL := strings.TrimSpace(string(body))
-	if !validURL(originalURL) {
+	userID, _ := auth.UserIDFromContext(r.Context())
+	shortURL, exists, err := h.app.Shorten(r.Context(), string(body), userID)
+	if errors.Is(err, service.ErrInvalidURL) {
 		badRequest(w)
 		return
 	}
-
-	userID, ok := auth.UserIDFromContext(r.Context())
-	if !ok {
+	if errors.Is(err, service.ErrUnauthorized) {
 		unauthorized(w)
 		return
 	}
-
-	shortURL, exists, err := h.shorten(originalURL, userID)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	if !exists {
-		h.audit(r.Context(), audit.ActionShorten, userID, originalURL)
-	}
-
 	w.Header().Set("Content-Type", "text/plain")
 	if exists {
 		w.WriteHeader(http.StatusConflict)
@@ -153,27 +191,20 @@ func (h *Handler) createJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	originalURL := strings.TrimSpace(req.URL)
-	if !validURL(originalURL) {
+	userID, _ := auth.UserIDFromContext(r.Context())
+	shortURL, exists, err := h.app.Shorten(r.Context(), req.URL, userID)
+	if errors.Is(err, service.ErrInvalidURL) {
 		badRequest(w)
 		return
 	}
-
-	userID, ok := auth.UserIDFromContext(r.Context())
-	if !ok {
+	if errors.Is(err, service.ErrUnauthorized) {
 		unauthorized(w)
 		return
 	}
-
-	shortURL, exists, err := h.shorten(originalURL, userID)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	if !exists {
-		h.audit(r.Context(), audit.ActionShorten, userID, originalURL)
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	if exists {
 		w.WriteHeader(http.StatusConflict)
@@ -214,8 +245,8 @@ func (h *Handler) createBatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		originalURL := strings.TrimSpace(item.OriginalURL)
-		if !validURL(originalURL) {
+		originalURL, err := service.NormalizeURL(item.OriginalURL)
+		if err != nil {
 			badRequest(w)
 			return
 		}
@@ -244,7 +275,7 @@ func (h *Handler) createBatch(w http.ResponseWriter, r *http.Request) {
 	}, len(results))
 	for i, item := range results {
 		resp[i].CorrelationID = item.CorrelationID
-		resp[i].ShortURL = h.shortURL(item.ShortID)
+		resp[i].ShortURL = h.app.ShortURL(item.ShortID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -259,7 +290,12 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	originalURL, err := h.repo.Find(id)
+	userID, _ := auth.UserIDFromContext(r.Context())
+	originalURL, err := h.app.Expand(r.Context(), id, userID)
+	if errors.Is(err, service.ErrInvalidID) {
+		badRequest(w)
+		return
+	}
 	if errors.Is(err, repository.ErrNotFound) {
 		badRequest(w)
 		return
@@ -272,9 +308,6 @@ func (h *Handler) redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-
-	userID, _ := auth.UserIDFromContext(r.Context())
-	h.audit(r.Context(), audit.ActionFollow, userID, originalURL)
 
 	w.Header().Set("Location", originalURL)
 	w.WriteHeader(http.StatusTemporaryRedirect)
@@ -292,7 +325,7 @@ func (h *Handler) userURLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	urls, err := h.repo.FindByUserID(userID)
+	urls, err := h.app.ListUserURLs(userID)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -307,7 +340,7 @@ func (h *Handler) userURLs(w http.ResponseWriter, r *http.Request) {
 		OriginalURL string `json:"original_url"`
 	}, len(urls))
 	for i, item := range urls {
-		resp[i].ShortURL = h.shortURL(item.ShortID)
+		resp[i].ShortURL = h.app.ShortURL(item.ShortID)
 		resp[i].OriginalURL = item.OriginalURL
 	}
 
@@ -373,51 +406,6 @@ func (h *Handler) ping(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-}
-
-func (h *Handler) shorten(originalURL string, userID string) (string, bool, error) {
-	id, err := h.repo.Save(originalURL, userID)
-	if errors.Is(err, repository.ErrURLExists) {
-		return h.shortURL(id), true, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-
-	return h.shortURL(id), false, nil
-}
-
-func (h *Handler) shortURL(id string) string {
-	return h.baseURL + "/" + id
-}
-
-func (h *Handler) audit(ctx context.Context, action string, userID string, originalURL string) {
-	if h.auditor == nil {
-		return
-	}
-
-	err := h.auditor.Notify(ctx, audit.Event{
-		Timestamp: time.Now().Unix(),
-		Action:    action,
-		UserID:    userID,
-		URL:       originalURL,
-	})
-	if err != nil {
-		h.logger.Error("audit delivery failed", zap.Error(err))
-	}
-}
-
-func validURL(rawURL string) bool {
-	if strings.IndexFunc(rawURL, unicode.IsSpace) >= 0 {
-		return false
-	}
-
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-
-	return u.Hostname() != "" && (u.Scheme == "http" || u.Scheme == "https")
 }
 
 func badRequest(w http.ResponseWriter) {

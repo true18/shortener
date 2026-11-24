@@ -598,6 +598,46 @@ func TestRunContextLeavesDatabaseOpenForCaller(t *testing.T) {
 	}
 }
 
+func TestInternalStatsUsesConfiguredTrustedSubnet(t *testing.T) {
+	h, err := server.New(config.Config{
+		BaseURL:       testBaseURL,
+		ServerAddress: "localhost:8080",
+		TrustedSubnet: "10.0.0.0/8",
+	}, zap.NewNop(), nil)
+	if err != nil {
+		t.Fatalf("server.New returned error: %v", err)
+	}
+	if closer, ok := h.(io.Closer); ok {
+		t.Cleanup(func() {
+			if err := closer.Close(); err != nil {
+				t.Errorf("Close server: %v", err)
+			}
+		})
+	}
+
+	allowed := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
+	allowed.Header.Set("X-Real-IP", "10.2.3.4")
+	allowedRec := httptest.NewRecorder()
+	h.ServeHTTP(allowedRec, allowed)
+	if allowedRec.Code != http.StatusOK {
+		t.Fatalf("allowed status = %d, want %d", allowedRec.Code, http.StatusOK)
+	}
+
+	denied := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
+	denied.Header.Set("X-Real-IP", "192.168.1.1")
+	deniedRec := httptest.NewRecorder()
+	h.ServeHTTP(deniedRec, denied)
+	if deniedRec.Code != http.StatusForbidden {
+		t.Fatalf("denied status = %d, want %d", deniedRec.Code, http.StatusForbidden)
+	}
+}
+
+func TestNewRejectsInvalidTrustedSubnet(t *testing.T) {
+	if _, err := server.New(config.Config{TrustedSubnet: "invalid"}, zap.NewNop(), nil); err == nil {
+		t.Fatal("server.New returned nil error")
+	}
+}
+
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 

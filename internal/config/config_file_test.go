@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,9 @@ func TestParseConfigFileAllValues(t *testing.T) {
 		"database_dsn":"postgres://config",
 		"enable_https":true,
 		"audit_file":"/tmp/audit.jsonl",
-		"audit_url":"https://audit.example/events"
+		"audit_url":"https://audit.example/events",
+		"trusted_subnet":"192.168.1.0/24",
+		"grpc_address":"127.0.0.1:9000"
 	}`)
 
 	cfg, err := Parse([]string{"-c", path})
@@ -35,6 +38,72 @@ func TestParseConfigFileAllValues(t *testing.T) {
 	}
 	if cfg.AuditFile != "/tmp/audit.jsonl" || cfg.AuditURL != "https://audit.example/events" {
 		t.Fatalf("audit = %q, %q", cfg.AuditFile, cfg.AuditURL)
+	}
+	if cfg.TrustedSubnet != "192.168.1.0/24" {
+		t.Fatalf("TrustedSubnet = %q", cfg.TrustedSubnet)
+	}
+	if cfg.GRPCAddress != "127.0.0.1:9000" {
+		t.Fatalf("GRPCAddress = %q", cfg.GRPCAddress)
+	}
+}
+
+func TestConfigExampleContainsAllRuntimeSettings(t *testing.T) {
+	clearRuntimeEnv(t)
+	path := filepath.Join("..", "..", "config.example.json")
+
+	values, err := loadFile(path)
+	if err != nil {
+		t.Fatalf("loadFile: %v", err)
+	}
+	if values.ServerAddress == nil || values.BaseURL == nil || values.FileStoragePath == nil ||
+		values.DatabaseDSN == nil || values.EnableHTTPS == nil || values.AuditFile == nil ||
+		values.AuditURL == nil || values.TrustedSubnet == nil || values.GRPCAddress == nil {
+		t.Fatal("config.example.json does not contain every runtime setting")
+	}
+
+	cfg, err := Parse([]string{"-c", path})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.TrustedSubnet != "127.0.0.1/32" {
+		t.Fatalf("TrustedSubnet = %q", cfg.TrustedSubnet)
+	}
+	if cfg.GRPCAddress != "localhost:3200" {
+		t.Fatalf("GRPCAddress = %q", cfg.GRPCAddress)
+	}
+	if _, _, err := net.ParseCIDR(cfg.TrustedSubnet); err != nil {
+		t.Fatalf("TrustedSubnet is not a valid CIDR: %v", err)
+	}
+	host, port, err := net.SplitHostPort(cfg.GRPCAddress)
+	if err != nil || host != "localhost" || port != "3200" {
+		t.Fatalf("GRPCAddress = %q, want localhost:3200", cfg.GRPCAddress)
+	}
+}
+
+func TestParseExplicitEmptyGRPCAddressFromConfig(t *testing.T) {
+	clearRuntimeEnv(t)
+	path := writeConfig(t, `{"grpc_address":""}`)
+
+	cfg, err := Parse([]string{"-c", path})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.GRPCAddress != "" {
+		t.Fatalf("GRPCAddress = %q, want disabled gRPC", cfg.GRPCAddress)
+	}
+}
+
+func TestParseEmptyGRPCEnvironmentOverridesConfig(t *testing.T) {
+	clearRuntimeEnv(t)
+	path := writeConfig(t, `{"grpc_address":"localhost:3200"}`)
+	t.Setenv(EnvGRPCAddress, "")
+
+	cfg, err := Parse([]string{"-c", path})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.GRPCAddress != "" {
+		t.Fatalf("GRPCAddress = %q, want disabled gRPC", cfg.GRPCAddress)
 	}
 }
 
@@ -74,7 +143,9 @@ func TestParseExplicitFlagsOverrideConfig(t *testing.T) {
 		"server_address":"json:8080",
 		"database_dsn":"postgres://json",
 		"enable_https":true,
-		"audit_file":"json-audit"
+		"audit_file":"json-audit",
+		"trusted_subnet":"192.168.0.0/16",
+		"grpc_address":"json:3200"
 	}`)
 
 	cfg, err := Parse([]string{
@@ -83,6 +154,8 @@ func TestParseExplicitFlagsOverrideConfig(t *testing.T) {
 		"-d", "",
 		"-s=false",
 		"--audit-file", "",
+		"-t", "",
+		"-g", "",
 	})
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
@@ -96,6 +169,12 @@ func TestParseExplicitFlagsOverrideConfig(t *testing.T) {
 	if cfg.AuditFile != "" {
 		t.Fatalf("AuditFile = %q, want explicit empty value", cfg.AuditFile)
 	}
+	if cfg.TrustedSubnet != "" {
+		t.Fatalf("TrustedSubnet = %q, want explicit empty value", cfg.TrustedSubnet)
+	}
+	if cfg.GRPCAddress != "" {
+		t.Fatalf("GRPCAddress = %q, want explicit empty value", cfg.GRPCAddress)
+	}
 }
 
 func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
@@ -107,7 +186,9 @@ func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
 		"database_dsn":"postgres://json",
 		"enable_https":true,
 		"audit_file":"json-audit",
-		"audit_url":"https://json.example/events"
+		"audit_url":"https://json.example/events",
+		"trusted_subnet":"192.168.0.0/16",
+		"grpc_address":"json:3200"
 	}`)
 	t.Setenv(EnvServerAddress, "env:8080")
 	t.Setenv(EnvBaseURL, "http://env")
@@ -116,6 +197,8 @@ func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
 	t.Setenv(EnvEnableHTTPS, "false")
 	t.Setenv(EnvAuditFile, "env-audit")
 	t.Setenv(EnvAuditURL, "https://env.example/events")
+	t.Setenv(EnvTrustedSubnet, "10.0.0.0/8")
+	t.Setenv(EnvGRPCAddress, "env:3200")
 
 	cfg, err := Parse([]string{
 		"-c", path,
@@ -126,6 +209,8 @@ func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
 		"-s=true",
 		"--audit-file", "flag-audit",
 		"--audit-url", "https://flag.example/events",
+		"-t", "172.16.0.0/12",
+		"-g", "flag:3200",
 	})
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
@@ -142,6 +227,12 @@ func TestParseEnvironmentOverridesFlagsAndConfig(t *testing.T) {
 	}
 	if cfg.AuditFile != "env-audit" || cfg.AuditURL != "https://env.example/events" {
 		t.Fatalf("audit = %q, %q", cfg.AuditFile, cfg.AuditURL)
+	}
+	if cfg.TrustedSubnet != "10.0.0.0/8" {
+		t.Fatalf("TrustedSubnet = %q", cfg.TrustedSubnet)
+	}
+	if cfg.GRPCAddress != "env:3200" {
+		t.Fatalf("GRPCAddress = %q", cfg.GRPCAddress)
 	}
 }
 
@@ -203,6 +294,7 @@ func TestParseConfigErrors(t *testing.T) {
 		{name: "missing file", path: func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing.json") }},
 		{name: "unreadable path", path: func(t *testing.T) string { return t.TempDir() }},
 		{name: "invalid audit URL", path: func(t *testing.T) string { return writeConfig(t, `{"audit_url":"ftp://example.com"}`) }},
+		{name: "invalid trusted subnet", path: func(t *testing.T) string { return writeConfig(t, `{"trusted_subnet":"not-a-cidr"}`) }},
 	}
 
 	for _, tt := range tests {
@@ -247,6 +339,8 @@ func clearRuntimeEnv(t *testing.T) {
 		EnvAuditFile,
 		EnvAuditURL,
 		EnvConfig,
+		EnvTrustedSubnet,
+		EnvGRPCAddress,
 	} {
 		unsetEnv(t, key)
 	}

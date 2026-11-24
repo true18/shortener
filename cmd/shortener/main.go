@@ -1,4 +1,4 @@
-// Package main starts the URL shortener HTTP service.
+// Package main starts the URL shortener HTTP and gRPC service.
 package main
 
 import (
